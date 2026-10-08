@@ -242,7 +242,7 @@ export default function AssetFilePreviewDialog({
             <div className="mt-0.5 text-[9px] text-[#98A2B3]">在线只读预览 · {asset.preview || asset.mimeType}</div>
           </div>
           <button className="secondary-button" onClick={download}><Download size={13} />下载</button>
-          <button className="icon-button" title="关闭预览" onClick={onClose}><X size={16} /></button>
+          <button type="button" className="icon-button dialog-close-button" title="关闭预览" aria-label="关闭预览" onClick={onClose}><X size={24} /></button>
         </header>
         <div className="min-h-0 flex-1 overflow-hidden bg-[#F2F4F7]">
           {!content && !error && (

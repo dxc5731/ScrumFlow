@@ -3,6 +3,7 @@ import { createPortal } from "react-dom"
 import {
   AlertTriangle,
   BarChart3,
+  Bot,
   CheckCircle2,
   Clock3,
   Flag,
@@ -29,6 +30,7 @@ import {
 } from "../store/selectors"
 import type { DailyActualWorkloadDetail } from "../store/selectors"
 import { MemberAvatar, notify } from "../components/planning/ui"
+import MeetingRoom from "../components/planning/MeetingRoom"
 
 function PageShell({
   title,
@@ -84,6 +86,10 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export function OverviewPage() {
   const state = useProjectStore()
+  const [meetingId, setMeetingId] = useState<string | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [meetingView, setMeetingView] = useState<"live" | "history">("live")
+  const recentMeeting = Object.values(state.meetingSessions).filter((item) => item.targetType === "project" && item.targetId === state.project.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
   const completion = selectProjectCompletion(state)
   const release = selectReleaseSummary(state)
   const sprint = state.sprints[state.workspace.selectedSprintId]
@@ -91,7 +97,8 @@ export function OverviewPage() {
   const recentImpacts = state.impactAnalyses.slice(-5).reverse()
   const risks = selectActiveRisks(state).slice(0, 5)
   return (
-    <PageShell title="项目概览" description={`${state.project.goal} · ${state.project.startDate} 至 ${state.project.endDate}`} icon={Gauge}>
+    <PageShell title="项目概览" description={`${state.project.goal} · ${state.project.startDate} 至 ${state.project.endDate}`} icon={Gauge} actions={<><button className="secondary-button" onClick={() => { setHistoryOpen(false); setMeetingView("live"); setMeetingId(state.createMeeting("project", state.project.id).id) }}><Bot size={14} /> 发起项目会议</button><button className="secondary-button" disabled={!recentMeeting} onClick={() => { setHistoryOpen(true); setMeetingView("history"); setMeetingId(recentMeeting.id) }}><Clock3 size={14} /> 历史会议</button>{recentMeeting && <button className="secondary-button" onClick={() => { setHistoryOpen(false); setMeetingView("history"); setMeetingId(recentMeeting.id) }}><Clock3 size={14} /> 查看最近会议</button>}</>}>
+      {meetingId && <MeetingRoom key={meetingId} initialView={meetingView} initialHistoryOpen={historyOpen} initialSessionId={meetingId} onClose={() => setMeetingId(null)} />}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Metric label="整体交付进度" value={`${completion.percent}%`} detail={`${completion.acceptedPoints}/${completion.totalPoints} Story Points 已验收`} />
         <Metric label="已交付业务价值" value={`${release.valueRate}%`} detail={`${release.deliveredValue}/${release.totalValue} 价值点`} tone="success" />
@@ -496,6 +503,11 @@ export function SettingsPage() {
         <div className="rounded-lg border border-[#E2E7EE] bg-white p-5"><h2 className="text-sm font-semibold text-[#344054]">当前项目</h2><div className="mt-4 space-y-3"><input className="form-input" value={project.name} onChange={(e) => setProject({ ...project, name: e.target.value })} placeholder="项目名称" /><input className="form-input" value={project.goal} onChange={(e) => setProject({ ...project, goal: e.target.value })} placeholder="项目目标" /><textarea className="form-input min-h-28" value={project.requirementBrief} onChange={(e) => setProject({ ...project, requirementBrief: e.target.value })} placeholder="需求说明" /><div className="grid grid-cols-2 gap-2"><input type="date" className="form-input" value={project.startDate} onChange={(e) => setProject({ ...project, startDate: e.target.value })} /><input type="date" className="form-input" value={project.endDate} onChange={(e) => setProject({ ...project, endDate: e.target.value })} /></div><button className="primary-button" onClick={() => { const result = state.updateProject(project); notify(result.message, result.ok ? "success" : "error") }}><Save size={13} />保存项目资料</button></div></div>
         <div className="rounded-lg border border-[#E2E7EE] bg-white p-5"><h2 className="text-sm font-semibold text-[#344054]">创建空白项目</h2><div className="mt-4 space-y-3"><input className="form-input" value={blank.name} onChange={(e) => setBlank({ ...blank, name: e.target.value })} placeholder="项目名称" /><input className="form-input" value={blank.goal} onChange={(e) => setBlank({ ...blank, goal: e.target.value })} placeholder="项目目标" /><textarea className="form-input min-h-20" value={blank.requirementBrief} onChange={(e) => setBlank({ ...blank, requirementBrief: e.target.value })} placeholder="需求说明" /><div className="grid grid-cols-2 gap-2"><input type="date" className="form-input" value={blank.startDate} onChange={(e) => setBlank({ ...blank, startDate: e.target.value })} /><input type="date" className="form-input" value={blank.endDate} onChange={(e) => setBlank({ ...blank, endDate: e.target.value })} /></div>{blank.members.map((member, index) => <div key={index} className="grid grid-cols-[1fr_1fr_80px_28px] gap-2"><input className="form-input" placeholder="成员姓名" value={member.name} onChange={(e) => { const members = [...blank.members]; members[index] = { ...member, name: e.target.value }; setBlank({ ...blank, members }) }} /><input className="form-input" placeholder="角色" value={member.role} onChange={(e) => { const members = [...blank.members]; members[index] = { ...member, role: e.target.value }; setBlank({ ...blank, members }) }} /><input className="form-input" type="number" value={member.capacityHours} onChange={(e) => { const members = [...blank.members]; members[index] = { ...member, capacityHours: Number(e.target.value) }; setBlank({ ...blank, members }) }} /><button className="icon-button" title="删除成员" disabled={blank.members.length === 1} onClick={() => setBlank({ ...blank, members: blank.members.filter((_, i) => i !== index) })}><Trash2 size={13} /></button></div>)}<button className="secondary-button" onClick={() => setBlank({ ...blank, members: [...blank.members, { name: "", role: "项目成员", capacityHours: 40 }] })}><Users size={13} />添加成员</button><button className="primary-button w-full" onClick={() => { if (!window.confirm("创建空白项目会替换当前浏览器中的项目数据，确定继续吗？")) return; const result = state.createBlankProject(blank); notify(result.message, result.ok ? "success" : "error") }}><Plus size={13} />创建空白项目</button></div></div>
       </div>
+      {import.meta.env.DEV && <div className="mt-5 border-t border-[#E2E7EE] pt-4"><button className="secondary-button" onClick={() => {
+        if (!window.confirm("恢复演示项目会替换当前项目、会议、建议与变更记录。确定重置吗？")) return
+        state.resetDemoData()
+        notify("演示项目已恢复到初始数据", "success")
+      }}>重置演示项目</button></div>}
     </PageShell>
   )
 }

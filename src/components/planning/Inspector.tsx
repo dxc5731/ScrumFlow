@@ -16,6 +16,7 @@ import {
   ListChecks,
   LocateFixed,
   Network,
+  Bot,
   Plus,
   Save,
   Trash2,
@@ -51,6 +52,7 @@ import { TASK_STATUS_COLORS } from "./statusColors"
 import ResultSubmissionPanel from "./ResultSubmissionPanel"
 import AssetAssociationPicker from "./AssetAssociationPicker"
 import StoryAcceptancePanel from "./StoryAcceptancePanel"
+import MeetingRoom from "./MeetingRoom"
 import { FieldLabel, MemberAvatar, notify } from "./ui"
 
 const tabs: { id: InspectorTab; label: string }[] = [
@@ -162,6 +164,10 @@ function StoryInspector({
   onClose: () => void
 }) {
   const state = useProjectStore()
+  const [meetingId, setMeetingId] = useState<string | null>(null)
+  const recentMeeting = Object.values(state.meetingSessions)
+    .filter((item) => item.targetType === "story" && item.targetId === story.id)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
   const tab = state.workspace.inspectorTab
   const tasks = selectStoryTasks(state, story.id)
   const storyQualityItems: Array<TaskEntity | SubtaskEntity> = []
@@ -236,6 +242,7 @@ function StoryInspector({
 
   return (
     <>
+      {meetingId && <MeetingRoom key={meetingId} initialSessionId={meetingId} onClose={() => setMeetingId(null)} />}
       <div className="border-b border-[#EAECF0]">
         <div className="flex items-center gap-2 px-4 pb-2 pt-4">
           <span className="rounded bg-[#F4F3FF] px-2 py-0.5 font-mono text-[10px] font-bold text-[#6941C6]">
@@ -285,6 +292,10 @@ function StoryInspector({
             multiline
           />
         </div>
+        {state.workspace.actorMode === "po" && <div className="flex flex-wrap gap-2 px-4 pb-3">
+          <button className="secondary-button" onClick={() => setMeetingId(state.createMeeting("story", story.id).id)}><Bot size={13} /> 发起 AI 项目会议</button>
+          {recentMeeting && <button className="secondary-button" onClick={() => setMeetingId(recentMeeting.id)}><Clock3 size={13} /> {recentMeeting.status === "active" ? "继续会议" : "查看会议记录"}</button>}
+        </div>}
         <div className="flex items-center gap-2 px-4 pb-3">
           <StatusSelect story={story} onChange={saveStory} />
           <PrioritySelect story={story} onChange={saveStory} />

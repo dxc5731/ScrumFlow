@@ -48,6 +48,24 @@ button:disabled {
   color: #344054;
 }
 
+.icon-button.dialog-close-button {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  color: #475467;
+}
+
+.dialog-close-button > svg {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.dialog-close-button:focus-visible {
+  outline: 2px solid #1570ef;
+  outline-offset: 2px;
+}
+
 .menu-row {
   display: flex;
   width: 100%;

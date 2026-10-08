@@ -9,6 +9,8 @@ import type { ProjectDataState } from "../types"
 type CapturePageProps = {
   captureOnly?: boolean
   captureRef?: Ref<HTMLDivElement>
+  captureSprintId?: string
+  captureFullScope?: boolean
 }
 
 const TILE_SIZE = 1800
@@ -50,14 +52,14 @@ function outputScale(width: number, height: number) {
   return Math.max(0.2, Math.min(2, dimensionScale, areaScale))
 }
 
-async function captureAndStitch(content: HTMLDivElement) {
+async function captureAndStitch(content: HTMLDivElement, highResolution = true) {
   await document.fonts?.ready
   await nextFrame()
 
   const rect = content.getBoundingClientRect()
   const width = Math.max(1, Math.ceil(Math.max(content.scrollWidth, rect.width)))
   const height = Math.max(1, Math.ceil(Math.max(content.scrollHeight, rect.height)))
-  const scale = outputScale(width, height)
+  const scale = Math.min(highResolution ? 2 : 1, outputScale(width, height))
   const output = document.createElement("canvas")
   output.width = Math.max(1, Math.ceil(width * scale))
   output.height = Math.max(1, Math.ceil(height * scale))
@@ -115,7 +117,7 @@ async function captureAndStitch(content: HTMLDivElement) {
 
 async function renderPlanningView(
   component: ComponentType<CapturePageProps>,
-  filename: string,
+  options: { sprintId?: string; fullScope?: boolean; highResolution?: boolean } = {},
 ) {
   const host = document.createElement("div")
   host.setAttribute("aria-hidden", "true")
@@ -131,22 +133,41 @@ async function renderPlanningView(
   const root = createRoot(host)
   try {
     flushSync(() => {
-      root.render(createElement(component, { captureOnly: true, captureRef }))
+      root.render(createElement(component, { captureOnly: true, captureRef, captureSprintId: options.sprintId, captureFullScope: options.fullScope }))
     })
     await nextFrame()
     if (!captureRef.current) throw new Error("导出视图尚未完成后台渲染")
-    const blob = await captureAndStitch(captureRef.current)
-    downloadBlob(blob, filename)
+    return await captureAndStitch(captureRef.current, options.highResolution ?? true)
   } finally {
     root.unmount()
     host.remove()
   }
 }
 
-export function exportStoryMapPng(state: ProjectDataState) {
-  return renderPlanningView(StoryMap, `${state.project.name}-故事地图.png`)
+export async function exportStoryMapPng(state: ProjectDataState) {
+  downloadBlob(await renderPlanningView(StoryMap), `${state.project.name}-故事地图.png`)
 }
 
-export function exportGanttPng(state: ProjectDataState) {
-  return renderPlanningView(Gantt, `${state.project.name}-甘特图.png`)
+export async function exportGanttPng(state: ProjectDataState) {
+  downloadBlob(await renderPlanningView(Gantt), `${state.project.name}-甘特图.png`)
+}
+
+export function captureGanttView(options: { sprintId?: string; fullScope?: boolean; highResolution?: boolean } = {}) { return renderPlanningView(Gantt, options) }
+export function captureStoryMapView() { return renderPlanningView(StoryMap) }
+
+export async function planningImagePdf(png: Blob): Promise<Blob> {
+  const [{ jsPDF }, bitmap] = await Promise.all([import("jspdf"), createImageBitmap(png)])
+  try {
+    const width = Math.min(500, bitmap.width * 0.2646), height = width * bitmap.height / bitmap.width
+    const pdf = new jsPDF({ orientation: width > height ? "landscape" : "portrait", unit: "mm", format: [width, height], compress: true })
+    pdf.addImage(new Uint8Array(await png.arrayBuffer()), "PNG", 0, 0, width, height, undefined, "FAST")
+    return pdf.output("blob")
+  } finally { bitmap.close() }
+}
+
+export async function downloadGanttView(format: "png" | "hd" | "pdf") {
+  const state = (await import("../store/projectStore")).useProjectStore.getState()
+  const png = await captureGanttView({ highResolution: format !== "png" })
+  const name = `${state.project.name}-${state.sprints[state.workspace.selectedSprintId]?.name ?? "当前排期"}-甘特图`
+  downloadBlob(format === "pdf" ? await planningImagePdf(png) : png, `${name}${format === "hd" ? "-高清" : ""}.${format === "pdf" ? "pdf" : "png"}`)
 }

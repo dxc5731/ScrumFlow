@@ -28,7 +28,7 @@ import type {
 } from "../types"
 import { generatePlantUml, parseUmlSource } from "../utils/uml"
 
-export const CURRENT_SCHEMA_VERSION = 13
+export const CURRENT_SCHEMA_VERSION = 16
 const DEMO_NOW = "2026-09-18T10:00:00+08:00"
 
 const DEMO_PROJECT_SCHEDULE = {
@@ -756,6 +756,9 @@ Repository ..|> Port : 实现
     sprintPulses: recordById(sprintPulses),
     discussions: recordById(discussions),
     history: [],
+    proposals: {},
+    meetingSessions: {},
+    meetingMessages: {},
     workspace: {
       currentPage: "story-map",
       currentView: "story-map",
