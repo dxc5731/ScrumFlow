@@ -417,16 +417,117 @@ export interface SprintPulseEntity {
   createdAt: string
 }
 
+export type ProposalOrigin = "meeting" | "event"
+export type ProposalTriggerType =
+  | "manual"
+  | "data_change"
+  | "sprint_close"
+  | "scheduled"
+export type AgentType =
+  | "project_orchestrator"
+  | "risk_dependency"
+  | "workload_capacity"
+  | "plan_execution"
+  | "project_monitor"
+  | "collaboration_notification"
+  | "material_organizer"
+  | "contribution_insight"
+export type ProposalTargetType =
+  | "project"
+  | "sprint"
+  | "story"
+  | "task"
+  | "subtask"
+  | "member"
+  | "dependency"
+  | "risk"
+export type ProposalActionType =
+  | "CREATE_TASK"
+  | "CREATE_SUBTASK"
+  | "CREATE_RISK"
+  | "CREATE_DISCUSSION"
+  | "BLOCK_TASK"
+  | "ADD_DEPENDENCY"
+  | "REMOVE_DEPENDENCY"
+  | "UPDATE_TASK"
+  | "UPDATE_SUBTASK"
+  | "UPDATE_STORY"
+  | "UPDATE_RISK"
+  | "UPDATE_DEADLINE"
+  | "CHANGE_ASSIGNEE"
+  | "CHANGE_PRIORITY"
+export type ProposalActionDecision = "pending" | "accepted" | "rejected"
+export type ProposalActionStatus = "pending" | "applied" | "failed" | "stale"
+export type AgentProposalStatus =
+  | "draft"
+  | "reviewed"
+  | "applying"
+  | "applied"
+  | "partially_applied"
+  | "rejected"
+  | "failed"
+
+export interface ProposalPrecondition {
+  targetType: ProposalTargetType
+  targetId: string
+  field: string
+  expected: unknown
+}
+
+export interface ProposalAction {
+  id: string
+  actionType: ProposalActionType
+  targetType: ProposalTargetType
+  targetId: string | null
+  beforeValue: unknown
+  proposedValue: unknown
+  reason: string
+  decision: ProposalActionDecision
+  status: ProposalActionStatus
+  preconditions: ProposalPrecondition[]
+  dependsOnActionIds: string[]
+  resultTargetId: string | null
+  appliedAt: string | null
+  error: string
+}
+
+export interface AgentProposal {
+  schemaVersion: number
+  id: string
+  projectId: string
+  origin: ProposalOrigin
+  triggerType: ProposalTriggerType
+  agentType: AgentType
+  targetType: ProposalTargetType
+  targetId: string
+  summary: string
+  reasoning: string
+  evidence: string[]
+  originalActions: ProposalAction[]
+  actions: ProposalAction[]
+  status: AgentProposalStatus
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+  reviewedBy: string | null
+  reviewedAt: string | null
+  reviewNote: string
+  appliedAt: string | null
+  applyError: string
+}
+
 export interface ChangeHistoryItem {
   id: string
   createdAt: string
   actorId: string
-  objectType: "project" | "activity" | "userTask" | "epic" | "story" | "task" | "subtask" | "acceptance" | "dependency" | "discussion" | "sprint" | "asset" | "risk" | "impact" | "pulse"
+  objectType: "project" | "activity" | "userTask" | "epic" | "story" | "task" | "subtask" | "acceptance" | "dependency" | "discussion" | "sprint" | "asset" | "risk" | "impact" | "pulse" | "proposal"
   objectId: string
   field: string
   before: unknown
   after: unknown
-  source: "ui" | "drag" | "import" | "undo" | "system"
+  source: "ui" | "drag" | "import" | "undo" | "system" | "agent"
+  proposalId?: string
+  proposalActionId?: string
 }
 
 export interface WorkspaceState {
@@ -488,6 +589,7 @@ export interface ProjectDataState {
   impactAnalyses: ImpactAnalysisEntity[]
   sprintPulses: Record<string, SprintPulseEntity>
   discussions: Record<string, DiscussionMessageEntity>
+  proposals: Record<string, AgentProposal>
   history: ChangeHistoryItem[]
   workspace: WorkspaceState
 }

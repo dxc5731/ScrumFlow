@@ -3,6 +3,12 @@ import { TASK_STATUS_COLORS } from "../components/planning/statusColors"
 import { MemberAvatar, notify } from "../components/planning/ui"
 import { useProjectStore } from "../store/projectStore"
 import {
+  EVENT_BADGE_STYLE,
+  eventTooltip,
+  highestSeverity,
+  useProjectEvents,
+} from "../hooks/useProjectEvents"
+import {
   selectBlockedByIncompletePredecessor,
   selectSprintTasks,
   selectTaskVisualState,
@@ -34,6 +40,7 @@ const typeMeta = {
 
 export default function ScrumBoard() {
   const state = useProjectStore()
+  const eventIndex = useProjectEvents()
   const tasks = selectSprintTasks(state, state.workspace.selectedSprintId).filter(
     (task) =>
       !state.workspace.memberFilterId ||
@@ -141,6 +148,8 @@ export default function ScrumBoard() {
                     selectBlockedByIncompletePredecessor(state, task.id)
                   const visualState = selectTaskVisualState(task)
                   const taskRisk = Object.values(state.risks).find((risk) => risk.targetType === "task" && risk.targetId === task.id && risk.status !== "resolved")
+                  const taskEvents = eventIndex.byTaskId[task.id] ?? []
+                  const taskEventSeverity = highestSeverity(taskEvents)
                   return (
                     <article
                       key={task.id}
@@ -180,6 +189,15 @@ export default function ScrumBoard() {
                         <span className="truncate text-[9px] text-[#98A2B3]">
                           {story.title}
                         </span>
+                        {taskEventSeverity && (
+                          <span
+                            className="ml-auto flex-shrink-0 rounded px-1 text-[8px] font-semibold"
+                            style={EVENT_BADGE_STYLE[taskEventSeverity]}
+                            title={`AI 事件：\n${eventTooltip(taskEvents)}`}
+                          >
+                            AI {taskEvents.length}
+                          </span>
+                        )}
                       </div>
                       <h3 className="mb-2 text-xs font-semibold leading-snug text-[#172033]">
                         {task.title}

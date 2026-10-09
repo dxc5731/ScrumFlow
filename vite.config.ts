@@ -5,6 +5,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { meetingLlmMiddleware } from './server/meetingLlm.ts'
 
 // Vite config — https://vitejs.dev/config/
 export default defineConfig(() => {
@@ -13,11 +14,19 @@ export default defineConfig(() => {
     build: {
       sourcemap: false,
     },
+    optimizeDeps: {
+      include: ['mermaid', 'docx', 'jszip', 'xlsx', 'mammoth', 'dompurify', 'marked'],
+    },
     test: {
       exclude: ['**/node_modules/**', '**/dist/**', '**/output/**'],
     },
     plugins: [
       localProjectPersistence(),
+      {
+        name: 'meeting-llm-adapter',
+        configureServer(server) { server.middlewares.use(meetingLlmMiddleware) },
+        configurePreviewServer(server) { server.middlewares.use(meetingLlmMiddleware) },
+      },
       react(),
       tailwindcss(),
     ],
@@ -67,7 +76,7 @@ async function writeAtomically(filePath: string, content: string | Buffer) {
 }
 
 function localProjectPersistence(): Plugin {
-  const dataDirectory = path.resolve(import.meta.dirname, 'local-data')
+  const dataDirectory = path.resolve(process.env.PROJECT_DATA_DIRECTORY || path.join(import.meta.dirname, 'local-data'))
   const stateFile = path.join(dataDirectory, 'project-state.json')
   const assetDirectory = path.join(dataDirectory, 'assets')
   let stateWriteQueue = Promise.resolve()

@@ -6,7 +6,9 @@ import { TASK_STATUS_COLORS } from "../components/planning/statusColors";
 import { planHierarchySchedule, useProjectStore } from "../store/projectStore";
 import type { ScheduleChangeMode, ScheduleEntityType, ScheduleRange } from "../store/projectStore";
 import { selectBlockedByIncompletePredecessor, selectCriticalPathTaskIds, selectSprintStories, selectStoryTasks, selectTaskSubtasks, selectTaskVisualState, storyDisplayStatus } from "../store/selectors";
+import { EVENT_BADGE_STYLE, eventTooltip, highestSeverity, useProjectEvents } from "../hooks/useProjectEvents";
 import type { EpicEntity, StoryEntity, SubtaskEntity, TaskEntity } from "../types";
+import type { DetectedEvent } from "../utils/eventDetection";
 
 const CELL = 26;
 const LABEL_W = 320;
@@ -47,6 +49,7 @@ export default function Gantt({
 } = {}) {
   const state = useProjectStore();
   const { workspace } = state;
+  const eventIndex = useProjectEvents();
   const containerRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const dragRef = useRef<DragState | null>(null);
@@ -287,7 +290,7 @@ export default function Gantt({
             })}
           </svg>
 
-          {layout.map(({ row }) => <GanttRow key={row.id} row={row} start={start} days={days} preview={preview} critical={workspace.ganttCriticalPath && critical.has(row.id)} dependencySource={dependencySource} selected={workspace.selectedObjectId === row.id} heatmapHighlighted={row.kind === "task" ? highlightedTaskIds.has(row.id) : row.kind === "subtask" ? highlightedSubtaskIds.has(row.id) : false} highlightDateOffset={highlightDateOffset} todayOffset={todayOffset} toggle={toggle} beginDrag={beginDrag} beginDependency={setDependencySource} completeDependency={completeDependency} setRef={(el) => { rowRefs.current[row.id] = el; }} />)}
+          {layout.map(({ row }) => <GanttRow key={row.id} row={row} start={start} days={days} preview={preview} critical={workspace.ganttCriticalPath && critical.has(row.id)} dependencySource={dependencySource} selected={workspace.selectedObjectId === row.id} heatmapHighlighted={row.kind === "task" ? highlightedTaskIds.has(row.id) : row.kind === "subtask" ? highlightedSubtaskIds.has(row.id) : false} highlightDateOffset={highlightDateOffset} todayOffset={todayOffset} toggle={toggle} beginDrag={beginDrag} beginDependency={setDependencySource} completeDependency={completeDependency} setRef={(el) => { rowRefs.current[row.id] = el; }} events={row.kind === "task" ? eventIndex.byTaskId[row.id] : undefined} />)}
         </div>
       </div>
       {!captureOnly && <div className="absolute bottom-5 right-4 z-40 overflow-hidden rounded-lg border border-[#E2E7EE] bg-white shadow-sm">
@@ -365,7 +368,7 @@ function splitEpicLabel(label: string) {
   return { code, title: title.join(" ") };
 }
 
-function GanttRow({ row, start, days, preview, critical, dependencySource, selected, heatmapHighlighted, highlightDateOffset, todayOffset, toggle, beginDrag, beginDependency, completeDependency, setRef }: { row: Row; start: Date; days: Date[]; preview: Record<string, SchedulePreview>; critical: boolean; dependencySource: string | null; selected: boolean; heatmapHighlighted: boolean; highlightDateOffset: number | null; todayOffset: number; toggle: (id: string) => void; beginDrag: (event: React.MouseEvent, entityType: ScheduleEntityType, entityId: string, range: ScheduleRange & { progress?: number }, mode: DragMode) => void; beginDependency: (id: string | null) => void; completeDependency: (id: string) => void; setRef: (el: HTMLDivElement | null) => void }) {
+function GanttRow({ row, start, days, preview, critical, dependencySource, selected, heatmapHighlighted, highlightDateOffset, todayOffset, toggle, beginDrag, beginDependency, completeDependency, setRef, events }: { row: Row; start: Date; days: Date[]; preview: Record<string, SchedulePreview>; critical: boolean; dependencySource: string | null; selected: boolean; heatmapHighlighted: boolean; highlightDateOffset: number | null; todayOffset: number; toggle: (id: string) => void; beginDrag: (event: React.MouseEvent, entityType: ScheduleEntityType, entityId: string, range: ScheduleRange & { progress?: number }, mode: DragMode) => void; beginDependency: (id: string | null) => void; completeDependency: (id: string) => void; setRef: (el: HTMLDivElement | null) => void; events?: DetectedEvent[] }) {
   const state = useProjectStore();
   const collapsed = state.workspace.ganttCollapsedIds.includes(row.id);
   const task = row.kind === "task" ? row.task : null;
@@ -425,6 +428,15 @@ function GanttRow({ row, start, days, preview, critical, dependencySource, selec
       {visualState === "overdue" && <span className="rounded bg-[#FEF3F2] px-1 text-[8px] font-semibold text-[#B42318]">逾期</span>}
       {visualState === "severe-blocked" && <span className="rounded bg-[#B42318] px-1 text-[8px] font-semibold text-white">严重</span>}
       {taskRisk && <span className={`rounded px-1 text-[8px] font-semibold ${taskRisk.level === "high" ? "bg-[#FEF3F2] text-[#B42318]" : "bg-[#FFFAEB] text-[#B54708]"}`}>⚠{taskRisk.level === "high" ? "高" : taskRisk.level === "medium" ? "中" : "低"}</span>}
+      {events && events.length > 0 && (
+        <span
+          className="rounded px-1 text-[8px] font-semibold"
+          style={EVENT_BADGE_STYLE[highestSeverity(events) ?? "low"]}
+          title={`AI 事件：\n${eventTooltip(events)}`}
+        >
+          AI {events.length}
+        </span>
+      )}
       {task && <MemberAvatar memberId={task.assigneeId} size={16} />}
       {row.kind === "subtask" && <MemberAvatar memberId={row.subtask.assigneeId} size={15} />}
     </div>

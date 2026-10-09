@@ -10,6 +10,9 @@ import {
 import type {
   AcceptanceCriterion,
   AcceptanceRecord,
+  AgentProposal,
+  AgentProposalStatus,
+  AgentType,
   AssetLinkTargetType,
   BlockReasonEntity,
   ChangeHistoryItem,
@@ -21,6 +24,13 @@ import type {
   InspectorTab,
   Member,
   ProjectDataState,
+  ProposalAction,
+  ProposalActionDecision,
+  ProposalActionType,
+  ProposalOrigin,
+  ProposalPrecondition,
+  ProposalTargetType,
+  ProposalTriggerType,
   RiskEntity,
   SprintPulseEntity,
   SprintEntity,
@@ -90,6 +100,32 @@ export interface ResultSubmission {
   links: string[]
   assetIds: string[]
 }
+
+export interface ProposalActionInput {
+  actionType: ProposalActionType
+  targetType: ProposalTargetType
+  targetId: string | null
+  proposedValue: unknown
+  reason: string
+  beforeValue?: unknown
+  preconditions?: ProposalPrecondition[]
+  dependsOnActionIds?: string[]
+}
+
+export interface CreateProposalInput {
+  origin: ProposalOrigin
+  triggerType: ProposalTriggerType
+  agentType: AgentType
+  targetType: ProposalTargetType
+  targetId: string
+  summary: string
+  reasoning: string
+  evidence: string[]
+  actions: ProposalActionInput[]
+}
+
+export const PROPOSAL_SCHEMA_VERSION = 1
+const PROPOSAL_LIMIT = 200
 
 export interface BlankProjectInput {
   name: string
@@ -276,6 +312,27 @@ export interface ProjectActions {
     content: string,
   ) => ActionResult
   undoLastChange: () => ActionResult
+  createProposal: (input: CreateProposalInput) => AgentProposal
+  saveProposal: (proposal: AgentProposal) => ActionResult
+  updateProposal: (id: string, patch: Partial<AgentProposal>) => ActionResult
+  updateProposalValue: (
+    id: string,
+    actionId: string,
+    value: Record<string, unknown>,
+  ) => ActionResult
+  setProposalActionDecision: (
+    id: string,
+    actionId: string,
+    decision: ProposalActionDecision,
+  ) => ActionResult
+  setProposalDecision: (
+    proposalId: string,
+    actionId: string,
+    decision: ProposalActionDecision,
+  ) => ActionResult
+  rejectProposal: (id: string, note?: string, reviewedBy?: string) => ActionResult
+  applyProposal: (id: string, reviewedByOrNote?: string) => ActionResult
+  deleteProposal: (id: string) => ActionResult
   exportProjectJson: () => string
   importProjectJson: (json: string) => ActionResult
   resetDemoData: () => void
@@ -311,6 +368,7 @@ const dataKeys: (keyof ProjectDataState)[] = [
   "impactAnalyses",
   "sprintPulses",
   "discussions",
+  "proposals",
   "history",
   "workspace",
 ]
@@ -338,6 +396,8 @@ function historyItem(
   before: unknown,
   after: unknown,
   source: ChangeSource,
+  proposalId?: string,
+  proposalActionId?: string,
 ): ChangeHistoryItem {
   return {
     id: makeId("history"),
@@ -349,6 +409,8 @@ function historyItem(
     before: structuredClone(before),
     after: structuredClone(after),
     source,
+    ...(proposalId ? { proposalId } : {}),
+    ...(proposalActionId ? { proposalActionId } : {}),
   }
 }
 
@@ -364,6 +426,86 @@ function appendImpact(
   item?: ImpactAnalysisEntity | null,
 ) {
   return item ? [...items, item].slice(-100) : items
+}
+
+function proposalObjectType(
+  targetType: ProposalTargetType,
+): ChangeHistoryItem["objectType"] {
+  if (targetType === "member") return "project"
+  if (
+    targetType === "sprint" ||
+    targetType === "story" ||
+    targetType === "task" ||
+    targetType === "subtask" ||
+    targetType === "dependency" ||
+    targetType === "risk"
+  ) {
+    return targetType
+  }
+  return "project"
+}
+
+function readProposalTarget(
+  state: ProjectDataState,
+  targetType: ProposalTargetType,
+  targetId: string,
+): unknown {
+  if (targetType === "project") return state.project
+  if (targetType === "sprint") return state.sprints[targetId]
+  if (targetType === "story") return state.stories[targetId]
+  if (targetType === "task") return state.tasks[targetId]
+  if (targetType === "subtask") return state.subtasks[targetId]
+  if (targetType === "member") return state.members[targetId]
+  if (targetType === "risk") return state.risks[targetId]
+  return state.dependencies[targetId]
+}
+
+function readProposalField(
+  state: ProjectDataState,
+  targetType: ProposalTargetType,
+  targetId: string,
+  field: string,
+): unknown {
+  const entity = readProposalTarget(state, targetType, targetId)
+  if (!entity || typeof entity !== "object") return undefined
+  return (entity as Record<string, unknown>)[field]
+}
+
+function proposalActionResult(
+  ok: boolean,
+  message: string,
+  result: unknown = null,
+) {
+  return { ok, message, result }
+}
+
+/** CREATE_SUBTASK 的 targetId 可以是前置 CREATE_TASK 动作的 ID，执行时解析为真实任务 ID。 */
+function resolvedActionTargetId(
+  state: ProjectDataState,
+  rawTargetId: string,
+  action: ProposalAction,
+): string {
+  if (state.tasks[rawTargetId]) return rawTargetId
+  if (action.dependsOnActionIds.includes(rawTargetId)) return rawTargetId
+  return rawTargetId
+}
+
+/** 把 dependsOn 链上前置动作的真实实体 ID 回填到后续动作的引用里。 */
+function resolveValueIds(
+  value: unknown,
+  resolvedIds: Map<string, string>,
+): unknown {
+  if (typeof value === "string") return resolvedIds.get(value) ?? value
+  if (Array.isArray(value)) return value.map((item) => resolveValueIds(item, resolvedIds))
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        resolveValueIds(item, resolvedIds),
+      ]),
+    )
+  }
+  return value
 }
 
 function executionSprint(
@@ -1707,6 +1849,7 @@ function normalizeProjectData(
     impactAnalyses: incoming.impactAnalyses ?? demo.impactAnalyses,
     sprintPulses: incoming.sprintPulses ?? demo.sprintPulses,
     discussions,
+    proposals: incoming.proposals ?? demo.proposals,
     workspace: {
       ...demo.workspace,
       ...(incoming.workspace ?? {}),
@@ -1798,6 +1941,7 @@ export const useProjectStore = create<ProjectStore>()(
           impactAnalyses: [],
           sprintPulses: {},
           discussions: {},
+          proposals: {},
           history: [historyItem("project", projectId, "create", null, project, "ui")],
           workspace,
         })
@@ -4674,8 +4818,350 @@ export const useProjectStore = create<ProjectStore>()(
         return { ok: false, message: "该操作暂不支持撤销" }
       },
 
-      exportProjectJson: () => JSON.stringify(dataSnapshot(get()), null, 2),
+      createProposal: (input) => {
+        const now = nowIso()
+        const proposalId = makeId("proposal")
+        const actions: ProposalAction[] = input.actions.map((action) => ({
+          id: makeId("action"),
+          actionType: action.actionType,
+          targetType: action.targetType,
+          targetId: action.targetId,
+          beforeValue: structuredClone(action.beforeValue ?? null),
+          proposedValue: structuredClone(action.proposedValue ?? null),
+          reason: action.reason,
+          decision: "pending",
+          status: "pending",
+          preconditions: structuredClone(action.preconditions ?? []),
+          dependsOnActionIds: action.dependsOnActionIds ?? [],
+          resultTargetId: null,
+          appliedAt: null,
+          error: "",
+        }))
+        const proposal: AgentProposal = {
+          schemaVersion: PROPOSAL_SCHEMA_VERSION,
+          id: proposalId,
+          projectId: get().project.id,
+          origin: input.origin,
+          triggerType: input.triggerType,
+          agentType: input.agentType,
+          targetType: input.targetType,
+          targetId: input.targetId,
+          summary: input.summary,
+          reasoning: input.reasoning,
+          evidence: input.evidence,
+          originalActions: structuredClone(actions),
+          actions,
+          status: "draft",
+          createdBy: get().workspace.currentUserId,
+          createdAt: now,
+          updatedAt: now,
+          reviewedBy: null,
+          reviewedAt: null,
+          reviewNote: "",
+          appliedAt: null,
+          applyError: "",
+        }
+        set((state) => {
+          const merged = { ...state.proposals, [proposalId]: proposal }
+          const ids = Object.keys(merged).sort((a, b) =>
+            merged[a].createdAt.localeCompare(merged[b].createdAt),
+          )
+          const kept =
+            ids.length > PROPOSAL_LIMIT
+              ? ids.slice(-PROPOSAL_LIMIT)
+              : ids
+          return {
+            proposals: Object.fromEntries(kept.map((key) => [key, merged[key]])),
+          }
+        })
+        return proposal
+      },
 
+      updateProposal: (id, patch) => {
+        const proposal = get().proposals[id]
+        if (!proposal) return { ok: false, message: "Proposal 不存在" }
+        if (proposal.status === "applied" || proposal.status === "rejected") {
+          return { ok: false, message: "已结束的 Proposal 不能再次修改" }
+        }
+        set((state) => ({
+          proposals: {
+            ...state.proposals,
+            [id]: { ...proposal, ...patch, id, updatedAt: nowIso() },
+          },
+        }))
+        return { ok: true, message: "Proposal 已更新" }
+      },
+
+      saveProposal: (proposal) => {
+        if (!proposal?.id) return { ok: false, message: "Proposal 缺少 ID" }
+        set((state) => {
+          const merged = { ...state.proposals, [proposal.id]: structuredClone(proposal) }
+          const ids = Object.keys(merged).sort((a, b) =>
+            merged[a].createdAt.localeCompare(merged[b].createdAt),
+          )
+          const kept = ids.length > PROPOSAL_LIMIT ? ids.slice(-PROPOSAL_LIMIT) : ids
+          return {
+            proposals: Object.fromEntries(kept.map((key) => [key, merged[key]])),
+          }
+        })
+        return { ok: true, message: "Proposal 已保存" }
+      },
+
+      updateProposalValue: (id, actionId, value) => {
+        const proposal = get().proposals[id]
+        if (!proposal) return { ok: false, message: "Proposal 不存在" }
+        if (proposal.status === "applied" || proposal.status === "rejected") {
+          return { ok: false, message: "已结束的 Proposal 不能再次修改" }
+        }
+        const target = proposal.actions.find((action) => action.id === actionId)
+        if (!target) return { ok: false, message: "Proposal 动作不存在" }
+        if (target.status === "applied") {
+          return { ok: false, message: "已执行的动作不能修改" }
+        }
+        set((state) => ({
+          proposals: {
+            ...state.proposals,
+            [id]: {
+              ...proposal,
+              status: proposal.status === "draft" ? "reviewed" : proposal.status,
+              updatedAt: nowIso(),
+              actions: proposal.actions.map((action) =>
+                action.id === actionId
+                  ? { ...action, proposedValue: structuredClone(value), decision: "accepted" as const }
+                  : action,
+              ),
+            },
+          },
+        }))
+        return { ok: true, message: "已更新动作建议值" }
+      },
+
+      setProposalActionDecision: (id, actionId, decision) => {
+        const proposal = get().proposals[id]
+        if (!proposal) return { ok: false, message: "Proposal 不存在" }
+        if (proposal.status !== "draft" && proposal.status !== "reviewed") {
+          return { ok: false, message: "当前状态不可调整动作" }
+        }
+        const target = proposal.actions.find((action) => action.id === actionId)
+        if (!target) return { ok: false, message: "Proposal 动作不存在" }
+        if (target.status === "applied") {
+          return { ok: false, message: "已执行的动作不能改判" }
+        }
+        set((state) => ({
+          proposals: {
+            ...state.proposals,
+            [id]: {
+              ...proposal,
+              status: "reviewed",
+              updatedAt: nowIso(),
+              actions: proposal.actions.map((action) =>
+                action.id === actionId ? { ...action, decision } : action,
+              ),
+            },
+          },
+        }))
+        return { ok: true, message: "已更新动作决定" }
+      },
+
+      setProposalDecision: (proposalId, actionId, decision) =>
+        get().setProposalActionDecision(proposalId, actionId, decision),
+
+      rejectProposal: (id, note = "", reviewedBy) => {
+        const proposal = get().proposals[id]
+        if (!proposal) return { ok: false, message: "Proposal 不存在" }
+        if (proposal.status === "applied") {
+          return { ok: false, message: "已执行的 Proposal 不能驳回" }
+        }
+        const reviewer = reviewedBy ?? get().workspace.currentUserId
+        set((state) => ({
+          proposals: {
+            ...state.proposals,
+            [id]: {
+              ...proposal,
+              status: "rejected",
+              reviewNote: note,
+              reviewedBy: reviewer,
+              reviewedAt: nowIso(),
+              updatedAt: nowIso(),
+            },
+          },
+          history: appendHistory(state.history, [
+            historyItem("proposal", id, "reject", proposal.status, note, "agent", id),
+          ]),
+        }))
+        return { ok: true, message: "Proposal 已驳回" }
+      },
+
+      deleteProposal: (id) => {
+        if (!get().proposals[id]) return { ok: false, message: "Proposal 不存在" }
+        set((state) => {
+          const next = { ...state.proposals }
+          delete next[id]
+          return { proposals: next }
+        })
+        return { ok: true, message: "Proposal 已删除" }
+      },
+
+      applyProposal: (id, reviewedByOrNote) => {
+        const proposal = get().proposals[id]
+        if (!proposal) return { ok: false, message: "Proposal 不存在" }
+        if (proposal.status === "applied" || proposal.status === "rejected") {
+          return { ok: false, message: "该 Proposal 已结束" }
+        }
+        if (!proposal.actions.some((action) => action.decision === "accepted")) {
+          return { ok: false, message: "没有已采纳的动作可执行" }
+        }
+        const reviewer = reviewedByOrNote || get().workspace.currentUserId
+
+        const history: ChangeHistoryItem[] = []
+        const appliedIds = new Set<string>()
+        const resolvedIds = new Map<string, string>()
+        const results: ProposalAction[] = []
+        let applied = 0
+
+        const pending = proposal.actions.filter(
+          (action) => action.decision === "accepted" && action.status !== "applied",
+        )
+        const ordered: ProposalAction[] = []
+        const remaining = [...pending]
+        while (remaining.length) {
+          const index = remaining.findIndex((item) =>
+            item.dependsOnActionIds.every(
+              (dep) => !remaining.some((candidate) => candidate.id === dep),
+            ),
+          )
+          if (index < 0) {
+            remaining.forEach((item) =>
+              results.push({ ...item, status: "stale", error: "动作依赖形成环路" }),
+            )
+            break
+          }
+          ordered.push(remaining.splice(index, 1)[0])
+        }
+        const cyclic = new Set(results.map((action) => action.id))
+
+        for (const action of proposal.actions) {
+          if (action.decision !== "accepted") {
+            results.push({ ...action })
+            continue
+          }
+          if (cyclic.has(action.id)) continue
+          if (action.status === "applied") {
+            appliedIds.add(action.id)
+            if (action.resultTargetId) resolvedIds.set(action.id, action.resultTargetId)
+            applied += 1
+            results.push({ ...action })
+            continue
+          }
+        }
+
+        for (const action of ordered) {
+          const unmet = action.dependsOnActionIds.find((dep) => !appliedIds.has(dep))
+          if (unmet) {
+            results.push({ ...action, status: "stale", error: "依赖的动作未成功执行" })
+            continue
+          }
+          const resolvedAction: ProposalAction = {
+            ...action,
+            targetId: action.targetId
+              ? (resolvedIds.get(action.targetId) ?? action.targetId)
+              : action.targetId,
+            proposedValue: resolveValueIds(action.proposedValue, resolvedIds),
+            preconditions: action.preconditions.map((condition) => ({
+              ...condition,
+              targetId: resolvedIds.get(condition.targetId) ?? condition.targetId,
+            })),
+          }
+
+          const current = get()
+          const mismatch = resolvedAction.preconditions.find(
+            (condition) =>
+              readProposalField(
+                current,
+                condition.targetType,
+                condition.targetId,
+                condition.field,
+              ) !== condition.expected,
+          )
+          if (mismatch) {
+            results.push({
+              ...action,
+              status: "stale",
+              error: `执行前数据已变化：${mismatch.targetId}.${mismatch.field}`,
+            })
+            continue
+          }
+
+          const outcome = executeProposalAction(current, resolvedAction)
+          if (outcome.ok) {
+            const resultId =
+              outcome.result && typeof outcome.result === "object"
+                ? String((outcome.result as Record<string, unknown>).id ?? "")
+                : ""
+            appliedIds.add(action.id)
+            if (resultId) resolvedIds.set(action.id, resultId)
+            applied += 1
+            history.push(
+              historyItem(
+                proposalObjectType(action.targetType),
+                action.targetId ?? proposal.targetId,
+                `agent:${action.actionType}`,
+                action.beforeValue,
+                outcome.result,
+                "agent",
+                id,
+                action.id,
+              ),
+            )
+            results.push({
+              ...action,
+              status: "applied",
+              resultTargetId: resultId || action.resultTargetId,
+              appliedAt: nowIso(),
+              error: "",
+            })
+          } else {
+            results.push({ ...action, status: "failed", error: outcome.message })
+          }
+        }
+
+        const failed = results.filter(
+          (action) => action.decision === "accepted" && action.status === "failed",
+        ).length
+        const stale = results.filter(
+          (action) => action.decision === "accepted" && action.status === "stale",
+        ).length
+        const status: AgentProposalStatus =
+          applied === 0 && failed + stale > 0
+            ? "failed"
+            : failed + stale > 0
+              ? "partially_applied"
+              : "applied"
+
+        set((state) => ({
+          proposals: {
+            ...state.proposals,
+            [id]: {
+              ...proposal,
+              actions: results,
+              status,
+              reviewedBy: reviewer,
+              reviewedAt: nowIso(),
+              appliedAt: nowIso(),
+              updatedAt: nowIso(),
+              applyError: failed || stale ? `失败 ${failed} 项，失效 ${stale} 项` : "",
+            },
+          },
+          history: appendHistory(state.history, history),
+        }))
+
+        return {
+          ok: failed === 0 && stale === 0,
+          message: `已执行 ${applied} 项${failed ? `，失败 ${failed} 项` : ""}${stale ? `，失效 ${stale} 项` : ""}`,
+        }
+      },
+
+      exportProjectJson: () => JSON.stringify(dataSnapshot(get()), null, 2),
       importProjectJson: (json) => {
         try {
           const parsed = JSON.parse(json) as ProjectDataState
@@ -4732,4 +5218,167 @@ export const useProjectStore = create<ProjectStore>()(
 
 export function resetProjectStoreForTests() {
   useProjectStore.setState({ ...createInitialProjectState() })
+}
+
+/**
+ * 把一条已采纳的 ProposalAction 翻译成现有的 Project Store 动作。
+ * 这里只做“执行”，不做权限判断和冲突校验，冲突由 applyProposal 的 preconditions 处理。
+ */
+function executeProposalAction(
+  state: ProjectDataState,
+  action: ProposalAction,
+): { ok: boolean; message: string; result: unknown } {
+  const store = useProjectStore.getState()
+  const value = (action.proposedValue ?? {}) as Record<string, unknown>
+  const asString = (key: string) =>
+    typeof value[key] === "string" ? (value[key] as string) : ""
+  const asNumber = (key: string) =>
+    typeof value[key] === "number" ? (value[key] as number) : undefined
+
+  switch (action.actionType) {
+    case "CREATE_TASK": {
+      const storyId = asString("storyId") || action.targetId || ""
+      if (!state.stories[storyId]) return proposalActionResult(false, "目标 Story 不存在")
+      const created = store.createTask(storyId, {
+        title: asString("title") || "AI 建议任务",
+        type: (asString("type") || "frontend") as TaskEntity["type"],
+        assigneeId: asString("assigneeId") || state.workspace.currentUserId,
+        estimate: asNumber("estimate") ?? 4,
+        ...(asString("startDate") ? { startDate: asString("startDate") } : {}),
+        ...(asString("endDate") ? { endDate: asString("endDate") } : {}),
+      })
+      return proposalActionResult(true, "任务已创建", { id: created.id, title: created.title })
+    }
+    case "CREATE_SUBTASK": {
+      const rawTaskId = asString("taskId") || action.targetId || ""
+      const taskId = resolvedActionTargetId(state, rawTaskId, action)
+      if (!state.tasks[taskId]) return proposalActionResult(false, "目标任务不存在")
+      const created = store.addSubtask(taskId, asString("title") || "AI 建议子任务")
+      const patch: Partial<SubtaskEntity> = {}
+      if (asString("assigneeId")) patch.assigneeId = asString("assigneeId")
+      if (asNumber("estimate") !== undefined) patch.estimate = asNumber("estimate")
+      if (asString("startDate")) patch.startDate = asString("startDate")
+      if (asString("endDate")) patch.endDate = asString("endDate")
+      if (Object.keys(patch).length) store.updateSubtask(created.id, patch, "agent")
+      return proposalActionResult(true, "子任务已创建", { id: created.id, title: created.title })
+    }
+    case "CREATE_RISK": {
+      const risk = store.createRisk({
+        title: asString("title") || "AI 识别风险",
+        targetType: (asString("targetType") || "task") as RiskEntity["targetType"],
+        targetId: asString("targetId") || action.targetId || "",
+        level: (asString("level") || "medium") as RiskEntity["level"],
+        description: asString("description") || action.reason,
+        impact: asString("impact"),
+        mitigation: asString("mitigation"),
+        ownerId: asString("ownerId") || state.workspace.currentUserId,
+        status: "open",
+      })
+      return proposalActionResult(true, "风险已登记", { id: risk.id, title: risk.title })
+    }
+    case "CREATE_DISCUSSION": {
+      const targetType = (asString("targetType") ||
+        (action.targetType === "story" || action.targetType === "task"
+          ? action.targetType
+          : "project")) as DiscussionMessageEntity["targetType"]
+      const targetId = asString("targetId") || action.targetId || state.project.id
+      const result = store.addDiscussion(
+        targetType,
+        targetId,
+        asString("content") || action.reason,
+      )
+      return proposalActionResult(result.ok, result.message, { targetType, targetId })
+    }
+    case "BLOCK_TASK": {
+      const taskId = asString("taskId") || action.targetId || ""
+      const result = store.addTaskBlockReason(
+        taskId,
+        asString("message") || action.reason,
+        asString("relatedTaskId") || null,
+      )
+      return proposalActionResult(result.ok, result.message, { taskId })
+    }
+    case "ADD_DEPENDENCY": {
+      const sourceTaskId = asString("sourceTaskId")
+      const targetTaskId = asString("targetTaskId")
+      const before = new Set(Object.keys(state.dependencies))
+      const result = store.addDependency(sourceTaskId, targetTaskId)
+      if (!result.ok) return proposalActionResult(false, result.message)
+      const created = Object.keys(useProjectStore.getState().dependencies).find(
+        (dependencyId) => !before.has(dependencyId),
+      )
+      return proposalActionResult(true, result.message, {
+        id: created ?? null,
+        sourceTaskId,
+        targetTaskId,
+      })
+    }
+    case "REMOVE_DEPENDENCY": {
+      const dependencyId = asString("dependencyId") || action.targetId || ""
+      const result = store.deleteDependency(dependencyId)
+      return proposalActionResult(result.ok, result.message, { id: dependencyId })
+    }
+    case "UPDATE_TASK":
+    case "UPDATE_DEADLINE":
+    case "CHANGE_ASSIGNEE": {
+      const patch = (action.proposedValue ?? {}) as Record<string, unknown>
+      const taskId = action.targetId ?? ""
+      const result = store.updateTask(
+        taskId,
+        {
+          ...(typeof patch.title === "string" ? { title: patch.title } : {}),
+          ...(typeof patch.assigneeId === "string" ? { assigneeId: patch.assigneeId } : {}),
+          ...(typeof patch.estimate === "number" ? { estimate: patch.estimate } : {}),
+          ...(typeof patch.startDate === "string" ? { startDate: patch.startDate } : {}),
+          ...(typeof patch.endDate === "string" ? { endDate: patch.endDate } : {}),
+          ...(typeof patch.status === "string" ? { status: patch.status } : {}),
+          ...(typeof patch.progress === "number" ? { progress: patch.progress } : {}),
+        } as Partial<TaskEntity>,
+        "agent",
+      )
+      return proposalActionResult(result.ok, result.message, { id: taskId })
+    }
+    case "UPDATE_SUBTASK": {
+      const patch = (action.proposedValue ?? {}) as Record<string, unknown>
+      const subtaskId = action.targetId ?? ""
+      const result = store.updateSubtask(
+        subtaskId,
+        {
+          ...(typeof patch.title === "string" ? { title: patch.title } : {}),
+          ...(typeof patch.assigneeId === "string" ? { assigneeId: patch.assigneeId } : {}),
+          ...(typeof patch.estimate === "number" ? { estimate: patch.estimate } : {}),
+          ...(typeof patch.startDate === "string" ? { startDate: patch.startDate } : {}),
+          ...(typeof patch.endDate === "string" ? { endDate: patch.endDate } : {}),
+          ...(typeof patch.status === "string" ? { status: patch.status } : {}),
+          ...(typeof patch.progress === "number" ? { progress: patch.progress } : {}),
+        } as Partial<SubtaskEntity>,
+        "agent",
+      )
+      return proposalActionResult(result.ok, result.message, { id: subtaskId })
+    }
+    case "UPDATE_STORY":
+    case "CHANGE_PRIORITY": {
+      const patch = (action.proposedValue ?? {}) as Record<string, unknown>
+      const storyId = action.targetId ?? ""
+      const result = store.updateStory(
+        storyId,
+        {
+          ...(typeof patch.title === "string" ? { title: patch.title } : {}),
+          ...(typeof patch.priority === "string" ? { priority: patch.priority } : {}),
+          ...(typeof patch.dueDate === "string" ? { dueDate: patch.dueDate } : {}),
+          ...(typeof patch.storyPoints === "number" ? { storyPoints: patch.storyPoints } : {}),
+        } as Partial<StoryEntity>,
+        "agent",
+      )
+      return proposalActionResult(result.ok, result.message, { id: storyId })
+    }
+    case "UPDATE_RISK": {
+      const patch = (action.proposedValue ?? {}) as Record<string, unknown>
+      const riskId = action.targetId ?? ""
+      const result = store.updateRisk(riskId, patch as Partial<RiskEntity>)
+      return proposalActionResult(result.ok, result.message, { id: riskId })
+    }
+    default:
+      return proposalActionResult(false, "暂不支持的动作用类型")
+  }
 }

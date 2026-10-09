@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react"
 import {
   Bell,
+  BellRing,
   BarChart3,
   CalendarRange,
   ClipboardCheck,
@@ -22,6 +23,7 @@ import {
   X,
 } from "lucide-react"
 import { useProjectStore } from "../store/projectStore"
+import { selectPendingProposals, proposalStatusLabel } from "../store/selectors"
 import { exportGanttPng, exportStoryMapPng } from "../utils/exportImage"
 import { MemberAvatar, notify } from "./planning/ui"
 
@@ -48,6 +50,7 @@ const workspaceMenuGroups = [
     label: "治理与分析",
     items: [
       { id: "risks" as const, label: "风险登记册", icon: ShieldCheck },
+
       { id: "workload" as const, label: "团队与 Sprint 分析", icon: BarChart3 },
     ],
   },
@@ -75,14 +78,22 @@ export default function CanvasTopBar() {
   const exportProjectJson = useProjectStore((state) => state.exportProjectJson)
   const importProjectJson = useProjectStore((state) => state.importProjectJson)
   const resetDemoData = useProjectStore((state) => state.resetDemoData)
+  const proposals = useProjectStore((state) => state.proposals)
+  const setProposalActionDecision = useProjectStore((state) => state.setProposalActionDecision)
+  const applyProposal = useProjectStore((state) => state.applyProposal)
+  const rejectProposal = useProjectStore((state) => state.rejectProposal)
   const [menu, setMenu] = useState<"nav" | "tools" | "notice" | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [exportingView, setExportingView] = useState<"story-map" | "gantt" | null>(null)
   const importRef = useRef<HTMLInputElement>(null)
 
-  const results = useMemo(() => {
-    const value = query.trim().toLowerCase()
+  const pendingProposals = useMemo(
+    () => selectPendingProposals({ proposals }),
+    [proposals],
+  )
+
+  const results = useMemo(() => {    const value = query.trim().toLowerCase()
     if (!value) return []
     return [
       ...Object.values(stories)
@@ -257,22 +268,83 @@ export default function CanvasTopBar() {
           <button
             className="icon-button relative"
             onClick={() => setMenu(menu === "notice" ? null : "notice")}
-            title="通知"
+            title="待确认建议"
           >
             <Bell size={15} />
-            <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[#F04438]" />
+            {pendingProposals.length > 0 && (
+              <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-[#F04438] px-1 text-[9px] font-semibold text-white">
+                {pendingProposals.length}
+              </span>
+            )}
           </button>
           {menu === "notice" && (
-            <Popup onClose={() => setMenu(null)} width={270} align="right">
-              <div className="border-b border-[#F2F4F7] px-3 py-2 text-xs font-semibold">
-                规划提醒
+            <Popup onClose={() => setMenu(null)} width={320} align="right">
+              <div className="flex items-center justify-between border-b border-[#F2F4F7] px-3 py-2">
+                <span className="text-xs font-semibold">待确认建议</span>
+                <span className="text-[10px] text-[#98A2B3]">{pendingProposals.length} 条</span>
               </div>
-              <div className="space-y-2 p-3 text-xs text-[#475467]">
-                <p>2 条依赖受未完成前置任务影响。</p>
-                <p>
-                  {sprints[workspace.selectedSprintId]?.name} 截止于{" "}
-                  {sprints[workspace.selectedSprintId]?.endDate}。
-                </p>
+              <div className="max-h-80 overflow-y-auto p-2">
+                {!pendingProposals.length && (
+                  <div className="py-6 text-center text-[10px] text-[#98A2B3]">
+                    暂无待确认建议
+                  </div>
+                )}
+                {pendingProposals.map((proposal) => {
+                  const accepted = proposal.actions.filter((action) => action.decision === "accepted").length
+                  const finished = proposal.status === "applied" || proposal.status === "rejected"
+                  return (
+                    <div key={proposal.id} className="mb-2 rounded-lg border border-[#E2E7EE] p-2.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="rounded bg-[#F4F3FF] px-1.5 py-0.5 text-[9px] font-semibold text-[#6941C6]">
+                          {proposal.origin === "meeting" ? "会议" : "事件"}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-[#344054]">
+                          {proposal.summary}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[9px] text-[#98A2B3]">
+                        {proposal.agentType} · {proposal.actions.length} 个动作 · 已采纳 {accepted} · {proposalStatusLabel(proposal)}
+                      </div>
+                      <div className="mt-1.5 flex items-center gap-2">
+                        <button
+                          className="secondary-button"
+                          disabled={finished}
+                          onClick={() =>
+                            proposal.actions.forEach((action) =>
+                              setProposalActionDecision(
+                                proposal.id,
+                                action.id,
+                                action.decision === "accepted" ? "pending" : "accepted",
+                              ),
+                            )
+                          }
+                        >
+                          全部采纳
+                        </button>
+                        <button
+                          className="primary-button"
+                          disabled={finished}
+                          onClick={() => {
+                            const result = applyProposal(proposal.id, workspace.currentUserId)
+                            notify(result.message, result.ok ? "success" : "error")
+                          }}
+                        >
+                          执行
+                        </button>
+                        <button
+                          className="secondary-button"
+                          disabled={finished}
+                          onClick={() => {
+                            rejectProposal(proposal.id, "在待确认列表中忽略", workspace.currentUserId)
+                            notify("建议已忽略", "info")
+                          }}
+                        >
+                          忽略
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             </Popup>
           )}
