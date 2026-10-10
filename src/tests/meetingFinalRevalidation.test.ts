@@ -1,3 +1,5 @@
+import { usePlanningFixtureClock } from "./planningFixtureClock"
+
 import { beforeEach, describe, expect, it } from "vitest"
 import { revalidateReviewedProposal } from "../agents/meetingFinalRevalidation"
 import { buildExecutionSummary, describeExecutionForChat } from "../agents/meetingExecutionSummary"
@@ -5,6 +7,8 @@ import { memoryFor } from "../agents/meetingContext"
 import { createPlanOptions, proposalFromOption } from "../agents/meetingPlanning"
 import { buildProjectAnalysisSnapshot, buildProjectAnalysisSnapshotForScope } from "../agents/meetingSnapshot"
 import { resetProjectStoreForTests, useProjectStore } from "../store/projectStore"
+
+usePlanningFixtureClock()
 
 describe("reviewed meeting plan", () => {
   beforeEach(() => resetProjectStoreForTests())

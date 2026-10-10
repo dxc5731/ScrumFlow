@@ -1,4 +1,5 @@
 import type { MeetingConstraints, MeetingMemory, MeetingPlanTask, MeetingSession, PlanOption, PlanRevision, ProjectDataState } from "../types"
+import { analyzeMeetingRequest } from "./meetingRequest"
 
 /** Compatibility fields are projections. Hard rules are merged from the latest turn only. */
 export function normalizeConstraints(input: MeetingConstraints): MeetingConstraints {
@@ -21,8 +22,11 @@ const number = (raw: string): number => ({ 一: 1, 二: 2, 两: 2, 三: 3, 四: 
 const esc = (raw: string) => raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 
 export function mergeMeetingConstraints(previous: MeetingConstraints, text: string, state: ProjectDataState, tasks: MeetingPlanTask[]): MeetingConstraints {
+  const request = analyzeMeetingRequest(text)
+  const directives = request.planningText
+  text = request.constraintText
   const next = normalizeConstraints(previous)
-  const people = [...text.matchAll(/(最多|至多|不超过|上限|至少|按|改成|换成|只有|只允许|只能)?\s*([一二两三四五六七八九十\d]+)\s*(?:个|名|位)?\s*人/g)].at(-1)
+  const people = [...directives.matchAll(/(最多|至多|不超过|上限|至少|按|改成|换成|只有|只允许|只能)?\s*([一二两三四五六七八九十\d]+)\s*(?:个|名|位)?\s*人/g)].at(-1)
   if (people) next.people = { mode: /最多|至多|不超过|上限/.test(people[1] ?? "") ? "max" : "exact", count: number(people[2]) }
   const members = Object.values(state.members)
   // A member clause lasts until the next sentence/semicolon; "而且她" retains its subject.
@@ -56,7 +60,7 @@ export function mergeMeetingConstraints(previous: MeetingConstraints, text: stri
   if (/不设.*工时上限|取消.*总工时.*限制/.test(globalText)) { next.maxTotalHours = null; next.maxHours = null }
   const days = globalText.match(/(?:工期|最多|上限|放宽|压到).{0,10}?([一二两三四五六七八九十\d]+)\s*天/)
   if (days) next.maxDays = number(days[1])
-  for (const match of text.matchAll(/第([一二两三四五六七八九十\d]+)(?:项|个)(?:任务|工作项)?[^；。]{0,16}?(?:交给|换给|换成|改给|给)\s*([^；。，\s]+)/g)) {
+  for (const match of directives.matchAll(/第([一二两三四五六七八九十\d]+)(?:项|个)(?:任务|工作项)?[^；。]{0,16}?(?:交给|换给|换成|改给|给)\s*([^；。，\s]+)/g)) {
     const task = tasks[number(match[1])-1]
     const member = members.find(m => match[2].startsWith(m.name))
     if (task && member) next.assignmentOverrides[task.key] = member.id

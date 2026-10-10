@@ -1,5 +1,6 @@
 import { addDays, differenceInCalendarDays, format, parseISO } from "date-fns"
 import type {
+  AgentProposal,
   AssetLinkTargetType,
   BlockReasonEntity,
   ProjectDataState,
@@ -8,6 +9,48 @@ import type {
   TaskEntity,
   TaskStatus,
 } from "../types"
+
+const PENDING_PROPOSAL_STATUSES: AgentProposal["status"][] = [
+  "draft",
+  "reviewed",
+  "partially_applied",
+  "failed",
+]
+
+/** 整单状态中文展示：全是 stale 时显示"已失效"，与真正执行失败区分。仅展示层，不改契约值。 */
+export function proposalStatusLabel(proposal: AgentProposal) {
+  if (proposal.status === "failed") {
+    const failed = proposal.actions.filter(
+      (action) => action.decision === "accepted" && action.status === "failed",
+    ).length
+    const stale = proposal.actions.filter(
+      (action) => action.decision === "accepted" && action.status === "stale",
+    ).length
+    if (failed === 0 && stale > 0) return "已失效"
+    return "失败"
+  }
+  if (proposal.status === "partially_applied") return "部分执行"
+  if (proposal.status === "applied") return "已执行"
+  if (proposal.status === "rejected") return "已忽略"
+  if (proposal.status === "reviewed") return "待确认"
+  if (proposal.status === "applying") return "执行中"
+  return "待确认"
+}
+
+/** 需要用户处理的 Proposal：待确认、部分执行或执行失败（含失效）。 */
+export function selectPendingProposals(state: Pick<ProjectDataState, "proposals">) {
+  return Object.values(state.proposals)
+    .filter((proposal) => PENDING_PROPOSAL_STATUSES.includes(proposal.status))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
+export function selectPendingActionCount(state: Pick<ProjectDataState, "proposals">) {
+  return selectPendingProposals(state).reduce(
+    (sum, proposal) =>
+      sum + proposal.actions.filter((action) => action.decision === "pending").length,
+    0,
+  )
+}
 
 export function byOrder<T extends { order: number }>(items: T[]) {
   return [...items].sort((a, b) => a.order - b.order)

@@ -52,6 +52,7 @@ import { TASK_STATUS_COLORS } from "./statusColors"
 import ResultSubmissionPanel from "./ResultSubmissionPanel"
 import AssetAssociationPicker from "./AssetAssociationPicker"
 import StoryAcceptancePanel from "./StoryAcceptancePanel"
+import EventInsightPanel from "./EventInsightPanel"
 import MeetingRoom from "./MeetingRoom"
 import { FieldLabel, MemberAvatar, notify } from "./ui"
 
@@ -500,6 +501,9 @@ function StoryInspector({
               <StoryAcceptancePanel storyId={story.id} compact />
             </section>
             <section>
+              <EventInsightPanel target={{ type: "story", id: story.id }} />
+            </section>
+            <section>
               <FieldLabel>风险与依赖</FieldLabel>
               <div className="space-y-2">
                 <div
@@ -893,6 +897,9 @@ function TaskInspector({
         </button>
       </div>
       <div className="flex-1 space-y-5 overflow-y-auto p-4">
+        <section>
+          <EventInsightPanel target={{ type: "task", id: task.id }} />
+        </section>
         <section>
           <FieldLabel>执行属性</FieldLabel>
           <div className="grid grid-cols-2 gap-2.5">

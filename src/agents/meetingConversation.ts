@@ -1,5 +1,7 @@
 import { addDays, differenceInBusinessDays, parseISO } from "date-fns"
 import { buildParallelTaskProposal, runPlanningMeeting } from "./meeting"
+import { analyzeMeetingRequest } from "./meetingRequest"
+import { requestsPlanReview } from "./meetingHandoff"
 import type {
   AgentProposal, AgentType, MeetingSession, ProjectDataState,
   ProposalAction, ProposalEvidence, StoryEntity,
@@ -116,6 +118,12 @@ function analysisBase(state: ProjectDataState, session: MeetingSession) {
 
 function taskAnswer(state: ProjectDataState, session: MeetingSession, question: string): AgentAnswer {
   const stories = targetStories(state, session)
+  const request = analyzeMeetingRequest(question)
+  if (request.deniesProposal || !/拆|新增|添加|创建|补充|细化/.test(request.commandText)) {
+    const tasks = stories.flatMap(story => story.taskIds.map(id => state.tasks[id]).filter(Boolean))
+    return { agentType: "task_decomposition", content: `当前有 ${tasks.length} 个任务。${tasks.map(task => `\n- ${task.id.toUpperCase()}「${task.title}」：${task.status}`).join("")}\n本轮仅核对现有工作。`, evidence: [], rawEvidence: [] }
+  }
+  question = request.commandText
   const base = analysisBase(state, session)
   const closed = stories.some((story) => story.sprintId && state.sprints[story.sprintId]?.status === "closed")
   const wantsParallel = /并行|三个人|3个人|三位|三人/.test(question)
@@ -178,7 +186,8 @@ function riskAnswer(state: ProjectDataState, session: MeetingSession, question: 
   const missingCriteria = stories.filter((story) => story.acceptanceCriteriaIds.length === 0)
   const base = analysisBase(state, session)
   const riskActions = base.actions.filter((item) => item.actionType === "CREATE_RISK" || item.actionType === "UPDATE_RISK")
-  const propose = /添加|新增|登记|调整|处理|生成行动/.test(question)
+  const request = analyzeMeetingRequest(question)
+  const propose = !request.deniesProposal && /添加|新增|登记|调整|处理|生成行动/.test(request.commandText)
   const findings = [
     suggestedTasks.length ? `刚才的方案包含 ${suggestedTasks.length} 个待确认任务${suggestedDependencies.length ? `和 ${suggestedDependencies.length} 条建议依赖` : "，尚未设置任务之间的先后依赖"}` : "",
     relatedRisks.length ? `项目已登记 ${relatedRisks.length} 项相关风险` : "",
@@ -239,7 +248,7 @@ function workloadAnswer(state: ProjectDataState, session: MeetingSession, questi
       : "当前项目没有可用成员，先补充成员后才能建议负责人。",
     evidence: ranked.map((item) => `${item.member.name}：未完成及待确认任务 ${item.hours}h / 本轮容量 ${item.capacity}h`),
     rawEvidence: base.evidence.filter((item) => item.agentType === "workload_capacity"),
-    ...(/调整|重新分配|生成行动/.test(question) ? { proposal: proposalForActions(base, "workload_capacity", actions, "成员负载调整建议") } : {}),
+    ...(!analyzeMeetingRequest(question).deniesProposal && /调整|重新分配|生成行动/.test(analyzeMeetingRequest(question).commandText) ? { proposal: proposalForActions(base, "workload_capacity", actions, "成员负载调整建议") } : {}),
   }
 }
 
@@ -347,7 +356,8 @@ export function analyzeMeetingAgent(state: ProjectDataState, session: MeetingSes
     case "collaboration_notification": return collaborationAnswer(state, session)
     case "material_organizer": return materialAnswer(state, session)
     case "contribution_insight": return contributionAnswer(state, session)
-    case "plan_execution": return executionAnswer(state, session)
+    case "plan_execution": return requestsPlanReview(question) ? executionAnswer(state, session)
+      : { agentType, content: summarizeMeeting(state, session), evidence: [], rawEvidence: [] }
     case "project_orchestrator": return {
       agentType, content: summarizeMeeting(state, session), evidence: [], rawEvidence: [],
     }

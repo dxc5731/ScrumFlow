@@ -14,6 +14,8 @@ const actionNames: Record<ProposalAction["actionType"], string> = {
   CREATE_TASK: "创建 Task", CREATE_SUBTASK: "创建 Subtask", UPDATE_TASK: "调整 Task",
   UPDATE_SUBTASK: "调整 Subtask", UPDATE_STORY: "调整 Story", CREATE_RISK: "创建 Risk",
   UPDATE_RISK: "调整 Risk", ADD_DEPENDENCY: "添加依赖",
+  CREATE_DISCUSSION: "发起讨论", BLOCK_TASK: "标记阻塞", REMOVE_DEPENDENCY: "移除依赖",
+  UPDATE_DEADLINE: "调整截止日期", CHANGE_ASSIGNEE: "变更负责人", CHANGE_PRIORITY: "变更优先级",
 }
 
 function showValue(value: unknown) {

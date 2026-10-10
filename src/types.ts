@@ -1,4 +1,4 @@
-export type Priority = "critical" | "high" | "medium" | "low"
+﻿export type Priority = "critical" | "high" | "medium" | "low"
 export type Status = "todo" | "in-progress" | "review" | "done" | "blocked"
 export type RiskLevel = "high" | "medium" | "low" | "none"
 export type TaskType = "frontend" | "backend" | "database" | "test" | "design" | "devops"
@@ -434,7 +434,12 @@ export interface ChangeHistoryItem {
 export type ProposalTargetType = "project" | "sprint" | "story" | "task" | "subtask" | "member" | "dependency" | "risk"
 export type AgentType = "project_orchestrator" | "task_decomposition" | "risk_dependency" | "workload_capacity" | "plan_execution" | "project_monitor" | "collaboration_notification" | "material_organizer" | "contribution_insight"
 export type ProposalStatus = "draft" | "reviewed" | "applying" | "applied" | "partially_applied" | "rejected" | "failed"
-export type ProposalActionType = "CREATE_TASK" | "CREATE_SUBTASK" | "UPDATE_TASK" | "UPDATE_SUBTASK" | "UPDATE_STORY" | "CREATE_RISK" | "UPDATE_RISK" | "ADD_DEPENDENCY"
+export type ProposalActionType = "CREATE_TASK" | "CREATE_SUBTASK" | "UPDATE_TASK" | "UPDATE_SUBTASK" | "UPDATE_STORY" | "CREATE_RISK" | "UPDATE_RISK" | "ADD_DEPENDENCY" | "CREATE_DISCUSSION" | "BLOCK_TASK" | "REMOVE_DEPENDENCY" | "UPDATE_DEADLINE" | "CHANGE_ASSIGNEE" | "CHANGE_PRIORITY"
+/** 事件侧历史别名：与冻结契约同义。 */
+export type ProposalOrigin = "meeting" | "event"
+export type ProposalTriggerType = "manual" | "data_change" | "sprint_close" | "scheduled"
+export type AgentProposalStatus = ProposalStatus
+export type ProposalActionDecision = "pending" | "accepted" | "rejected"
 
 export interface ProposalPrecondition {
   targetType: ProposalTargetType

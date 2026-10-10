@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { usePlanningFixtureClock } from "./planningFixtureClock"
+
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { asksForExistingTaskStatus, asksForNewWork, buildMeetingContext } from "../agents/meetingContext"
 import { replyViolatesAssignments } from "../agents/meetingReplyValidation"
 import { parseAgentMention } from "../agents/meetingConversation"
@@ -9,6 +11,8 @@ import { isMaterialRequest, materialBundleSchema, validateDiagramSource } from "
 import { resetProjectStoreForTests, useProjectStore } from "../store/projectStore"
 
 const offline: MeetingLlm = { interpret: async () => null, explain: async () => null }
+usePlanningFixtureClock()
+
 describe("actual meeting requests", () => {
   beforeEach(() => resetProjectStoreForTests())
   it.each([
@@ -40,6 +44,7 @@ describe("actual meeting requests", () => {
     expect(composerTokenAt("test@example.com", 16)).toBeNull()
   })
   it("the screenshot request produces reviewable children and blocks new load in an expired Sprint", async () => {
+    vi.setSystemTime(new Date("2026-10-03T10:00:00+08:00"))
     const state = useProjectStore.getState()
     const meeting = state.createMeeting("story", "us024")
     const parent = state.tasks["fe-024-2"]

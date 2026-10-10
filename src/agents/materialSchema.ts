@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { analyzeMeetingRequest } from "./meetingRequest"
 
 const title = z.string().trim().min(1).max(120)
 const sheet = z.object({ name: title, columns: z.array(z.string().max(200)).min(1).max(40),
@@ -16,8 +17,14 @@ export type MaterialArtifact = z.infer<typeof materialBundleSchema>["artifacts"]
 export type MaterialBundle = z.infer<typeof materialBundleSchema>
 
 export function isMaterialRequest(question: string): boolean {
+  question = analyzeMeetingRequest(question).commandText
   return /(?:生成|制作|整理|导出|下载|写|画|绘制|展示|看看|给我看|修改|完善|补充|准备)[\s\S]{0,60}(?:UML|甘特图|用户地图|故事地图|旅程图|用例图|类图|时序图|顺序图|活动图|状态图|部署图|组件图|ER图|WBS|文档|纪要|报告|说明书|章程|成果|材料|Excel|Word|PDF|表格|台账|登记册|RACI|测试计划|验收计划|总结表|预算表|工作量表|行动项清单|变更摘要)/i.test(question) ||
     /^(?:请)?(?:UML|甘特图|用户地图|用户故事地图|用例图|时序图|类图|Excel|Word|需求说明书|项目章程|成果包)[。！？?！\s]*$/i.test(question)
+}
+
+export function isMaterialFollowUp(question: string): boolean {
+  question = analyzeMeetingRequest(question).commandText
+  return /(?:这份|这张|刚才.*(?:图|文档|材料)).*(?:改|补充|完善|生成)|(?:改成|修改|更改|调整).*(?:标题|格式|颜色|章节)|补充.*章节|再具体|继续完善|重新生成/.test(question)
 }
 
 export function safeMaterialFilename(title: string): string {

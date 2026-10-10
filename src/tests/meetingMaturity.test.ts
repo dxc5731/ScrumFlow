@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { usePlanningFixtureClock } from "./planningFixtureClock"
+
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { coordinateMeetingTurn } from "../agents/meetingDecision"
 import { buildMeetingContext, focusedMeetingSession, memoryFor, updateMeetingFocus } from "../agents/meetingContext"
 import { describeHypothesisImpact, generateMeetingMinutes } from "../agents/meetingMinutes"
@@ -11,6 +13,8 @@ import type { MeetingLlm } from "../agents/meetingLlm"
 import { resetProjectStoreForTests, useProjectStore } from "../store/projectStore"
 
 const offline: MeetingLlm = { interpret: async () => null, explain: async () => null }
+
+usePlanningFixtureClock()
 
 describe("meeting focus and minutes", () => {
   beforeEach(() => resetProjectStoreForTests())
@@ -59,6 +63,7 @@ describe("meeting focus and minutes", () => {
   })
 
   it("acknowledges a Sprint return without carrying the previous Story plan", async () => {
+    vi.setSystemTime(new Date("2026-10-03T10:00:00+08:00"))
     const store = useProjectStore.getState()
     const session = store.createMeeting("project", store.project.id)
     const focused = updateMeetingFocus(store, session, memoryFor(session), "切到 #US030")

@@ -1,6 +1,6 @@
 # AI 会议协作模块说明
 
-> 面向组内开发同学。依据当前仓库代码整理，基线为本地提交 `9962a5d`（2026-10-08）。本文介绍我负责的会议协作部分，包含使用方式、数据边界和维护入口；不把已有 Story Map、Gantt、Scrum Board 等页面算作本模块成果。
+> 面向组内开发同学。2026-10-10 更新，已整合 `merge/event-plus-meeting` 分支及联调修复。本文介绍我负责的会议协作部分，包含使用方式、数据边界和维护入口；不把已有 Story Map、Gantt、Scrum Board 等页面算作本模块成果。同学拉取后的配置和协作步骤见 [代码同步与启动指南](AGENT_SYNC_GUIDE.md)。
 
 ## 一、模块定位与开发范围
 
@@ -200,6 +200,8 @@ flowchart TD
 
 `coordinateMeetingTurn` 是主协调入口。它恢复 `MeetingWorkingState`，确定当前 Agent 和讨论对象，再调用相应服务。`MeetingMemory` 保存焦点 Story/Task/Sprint、约束、候选方案、选中方案和待确认分工；`workingState` 保存方案版本、What-if 结果及会议基线。人数、排除成员、指定分工等由代码合并，不只靠历史文字让模型“记住”。
 
+`meetingRequest.ts` 统一区分本轮的肯定指令、禁止操作、查询、引用和假设。数字员工、材料生成、计划审核和约束合并共用此边界；上一轮活动助手及模型返回的意图不能代替本轮授权。新增表达的回归用例集中在 `meetingIntentSafety.test.ts`，避免各入口再次单独过滤“不修改”。
+
 `buildMeetingContext` 将全局会话、当前对象和规划状态分开；常规说明请求通常发送最近 6 条相关消息，员工追问额外选择最近与本人有关的问答。只有完整会议摘要专门读取整场有效对话。模型数据投影包含项目事实，不发送工作区设置或附件二进制。
 
 快照与依赖分析读取同一 Store。容量采用成员每周小时数折算工作日窗口，未完成工作优先按叶子任务/子任务估算求和，不把 Sprint Story Points 当作人时，也不简单按百分比扣减估算。这是计划容量，不是考勤或实际剩余工时测量。
@@ -273,17 +275,17 @@ flowchart TD
 | 项目数据 | 会议侧如何使用 | 当前写入边界 |
 | --- | --- | --- |
 | Project、Activity、UserTask、Epic、Sprint | 项目目标、层次、讨论范围、日期、Sprint Goal 和容量分析 | 会议 Proposal 没有通用修改这些实体的动作 |
-| Story、验收标准 | 理解需求、验收边界、任务所属关系、材料事实 | `UPDATE_STORY` 仅支持 risk、riskNote、assigneeId；不是通用 Story 编辑器 |
-| Task / Subtask | 工时、状态、阻塞、分工和执行步骤 | 支持创建及更新；更新白名单为标题、估算、负责人，Task 另含 type；创建 Task 可带起止日期 |
+| Story、验收标准 | 理解需求、验收边界、任务所属关系、材料事实 | 合并后的 `UPDATE_STORY` 支持 risk、riskNote、assigneeId、title、priority、dueDate、storyPoints；不是通用实体编辑器 |
+| Task / Subtask | 工时、状态、阻塞、分工和执行步骤 | 支持创建及更新；共享更新白名单包含标题、估算、负责人、日期、状态和进度，Task 另含 type；仍须审核与执行校验 |
 | 成员 | 姓名、职责、周容量、数字员工身份 | 不支持通过 Proposal 修改成员档案或容量值 |
-| Dependency | 遍历前置/后续关系、What-if、图形生成 | 当前动作是 `ADD_DEPENDENCY`；讨论解除依赖不等于已有删除依赖写回能力 |
+| Dependency | 遍历前置/后续关系、What-if、图形生成 | 共享执行器支持 `ADD_DEPENDENCY` 和事件侧接入的 `REMOVE_DEPENDENCY`；会议中的解除依赖假设不会自动写回 |
 | Risk | 风险说明、影响与缓解、材料汇总 | `CREATE_RISK`、`UPDATE_RISK` 经审核执行 |
 | ChangeHistory | 确认实际执行和人工修改结果 | Store Action 产生记录，执行器补充 Proposal 来源关联 |
 | Asset | 文件元数据、预览、下载、会议成果关联 | 材料生成/改名/成果包选择直接使用资产 Store 操作，不走任务变更 Proposal |
 
-以上写入限制来自 `validateProposalValue`，不是“模型说能修改就能修改”。当前 `UPDATE_TASK` 也不允许直接修改状态、日期；验收和完成状态仍通过已有项目操作管理。普通聊天中的“我完成了”“如果延期”可能成为会议事实/假设，不会自动改变正式实体。
+以上写入限制来自 `validateProposalValue`，不是“模型说能修改就能修改”。合并后共享执行器可审核状态和日期类更新，但数字员工聊天不会直接调用写操作。普通聊天中的“我完成了”“如果延期”可能成为会议事实/假设，不会自动改变正式实体。
 
-项目写回通过共享 Store Action，因此现有 Story Map、Gantt、执行页面读取同一份结果。会议模块增加了这些页面的会议入口和导出衔接，并未重新实现它们。若另一位同学接入事件建议，应使用 `origin: "event"` 的同一 Proposal 协议与执行器；当前仓库有协议，但没有完整事件侧生产者。
+项目写回通过共享 Store Action，因此现有 Story Map、Gantt、执行页面读取同一份结果。会议模块增加了这些页面的会议入口和导出衔接，并未重新实现它们。同学的事件建议已通过 `origin: "event"` 接入同一 Proposal 协议、待确认中心与执行器；事件侧实现见 [事件 Agent 报告](EVENT_AGENT_FINAL_REPORT.md)。
 
 联调时重点保持：实体 ID、Story.taskIds、Task.subtaskIds、成员引用、依赖端点及资产 contentRef 一致。修改字段、枚举或工时口径时，同步检查 `types.ts`、Store 归一化/迁移、快照、约束与执行校验、模型数据投影、材料模板和相应测试，避免页面已更新而 Agent 仍使用旧口径。
 
@@ -354,6 +356,6 @@ npm test -- src/tests/meetingRevisionReview.test.ts src/tests/meetingRoomInterac
 - 来源 Hover 的后备匹配是相关对话检索；生成文档/UML 也需要人工核对，不能作为已实现功能证明。
 - 现有 Proposal 只覆盖上述动作和字段，不能执行任意项目操作；部分失败不会自动回滚整份方案。
 - 视图导出依赖浏览器渲染。文件存储当前单文件上限 5 MB，大图或成果包超限可能失败；普通文档 PDF 通过 HTML 打印，未实现所有格式间的通用转换。
-- 项目巡检、协作建议、贡献洞察尚未完成事件侧闭环；后续接入时复用共享服务，不另建执行器。
+- 会议内的项目巡检、协作建议、贡献洞察仍是轻量问答；同学的独立事件扫描与审批流程已合入。扩展双方能力时继续复用共享服务，不另建执行器。
 
 后续扩展优先沿现有入口：新增材料类型扩展标准模板/Schema，新增写操作同时扩展协议、字段校验、执行器和测试，新增角色补充路由、上下文范围及提示词。保持“事实有来源、修改经审核、结果可追踪”这一条链路即可。

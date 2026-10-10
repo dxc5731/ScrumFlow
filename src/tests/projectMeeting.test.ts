@@ -1,3 +1,5 @@
+import { usePlanningFixtureClock } from "./planningFixtureClock"
+
 import { beforeEach, describe, expect, it } from "vitest"
 import { coordinateMeetingTurn } from "../agents/meetingDecision"
 import { meetingEntities, memoryFor, updateMeetingFocus } from "../agents/meetingContext"
@@ -22,6 +24,8 @@ async function say(meetingId: string, memberId: string, content: string) {
     content: result.answer.content, evidence: result.answer.evidence })
   return result
 }
+
+usePlanningFixtureClock()
 
 describe("project-wide meeting", () => {
   beforeEach(() => resetProjectStoreForTests())

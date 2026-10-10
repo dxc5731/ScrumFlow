@@ -1,4 +1,5 @@
 import { buildProjectAnalysisSnapshot, type ProjectAnalysisSnapshot } from "./meetingSnapshot"
+import { requestsDirectMutation } from "./meetingRequest"
 import type { MeetingMemory, MeetingSession, ProjectDataState, TaskEntity } from "../types"
 
 export interface DigitalMemberAnswer { memberId: string; content: string; evidence: string[]; suggestedTaskId?: string }
@@ -53,13 +54,15 @@ export function digitalMemberAnswer(state: ProjectDataState, session: MeetingSes
   ]
   const leading = (focused.length ? focused : unfinished).slice(0, 2).map((task) => `「${task.title}」`).join("、")
   let content: string
-  if (/(?:直接|帮我|你|把).{0,30}(?:改成|标记|修改|更新|删除|写入)/.test(question)) {
+  if (requestsDirectMutation(question)) {
     content="你确认一下新的分工或完成情况，我再按确定的安排做。我这里先不替你改。"
   } else if (/接.*(?:\d+\s*h|工作)|容量|再接|只回答.*自己/.test(question)) {
     const incoming=Number(question.match(/(\d+)\s*(?:h|小时)/i)?.[1]??0)
     const canAccept = remainingDays > 0 && sprintHours + incoming <= capacity
-    content = canAccept ? `这项工作我这边有时间接。\n\n先把范围和优先级定一下，我还得一起安排手里的工作。`
+    const facts = `我在 ${currentSprint?.name ?? "当前范围"} 还有 ${sprintHours}h 未完成工作，剩余 ${remainingDays} 个工作日，按个人容量折算可安排约 ${capacity}h，扣除已有工作后余量为 ${Math.max(0, capacity - sprintHours)}h。`
+    content = facts + "\n\n" + (canAccept ? `这项${incoming ? ` ${incoming}h` : ""}工作我这边有时间接。先把范围和优先级定一下，当前没有修改分工。`
       : `我这边暂时不太适合再接${incoming ? ` ${incoming}h` : "新工作"}。\n\n${remainingDays === 0 ? `${currentSprint?.name ?? "本轮"}已经没有剩余工作窗口，` : "本轮手头的工作已经比较满了，"}我还有约 ${sprintHours}h 没有收口。真要加的话，${remainingDays === 0 ? "得放到后面的安排里，现在接进来我也做不完。" : "先告诉我哪项可以往后放，不然会挤掉已经答应的工作。"}`
+    )
   } else if (/已经完成|已完成|做完了什么|完成了哪些|完成了什么/.test(question)) {
     const completed = ownTasks.filter(task => task.status === "done")
     const steps = Object.values(state.subtasks).filter(step => step.assigneeId === memberId && step.status === "done")

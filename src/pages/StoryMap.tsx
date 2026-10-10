@@ -23,6 +23,13 @@ import BacklogPanel, {
 import { TASK_STATUS_COLORS } from "../components/planning/statusColors"
 import { MemberAvatar, notify } from "../components/planning/ui"
 import { useProjectStore } from "../store/projectStore"
+import type { DetectedEvent } from "../utils/eventDetection"
+import {
+  EVENT_BADGE_STYLE,
+  eventTooltip,
+  highestSeverity,
+  useAllSprintsEvents,
+} from "../hooks/useProjectEvents"
 import {
   byOrder,
   selectEpics,
@@ -131,6 +138,7 @@ export default function StoryMap({
 } = {}) {
   const state = useProjectStore()
   const { workspace } = state
+  const eventIndex = useAllSprintsEvents()
   const setWorkspace = state.setWorkspace
   const canvasRef = useRef<HTMLDivElement>(null)
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -921,6 +929,7 @@ export default function StoryMap({
                                 <StoryCard
                                   key={story.id}
                                   story={story}
+                                  events={eventIndex.byStoryId[story.id]}
                                   selected={
                                     workspace.selectedObjectType === "story" &&
                                     workspace.selectedObjectId === story.id
@@ -1372,6 +1381,7 @@ function HierarchyDeleteDialog({
 
 function StoryCard({
   story,
+  events,
   selected,
   dragging,
   onDragStart,
@@ -1379,6 +1389,7 @@ function StoryCard({
   setRef,
 }: {
   story: StoryEntity
+  events?: DetectedEvent[]
   selected: boolean
   dragging: boolean
   onDragStart: (event: React.DragEvent) => void
@@ -1393,6 +1404,7 @@ function StoryCard({
   const progress = selectStoryProgress(state, story.id)
   const isDone = story.deliveryStatus === "accepted"
   const effectiveRisk = selectStoryRiskLevel(state, story.id)
+  const eventSeverity = highestSeverity(events ?? [])
   return (
     <div
       ref={setRef}
@@ -1426,6 +1438,15 @@ function StoryCard({
           <span className="font-mono text-[9px] text-[#98A2B3]">
             {story.id.toUpperCase()}
           </span>
+          {eventSeverity && (
+            <span
+              className="rounded px-1 py-0.5 text-[8px] font-semibold"
+              style={EVENT_BADGE_STYLE[eventSeverity]}
+              title={`AI 事件：\n${eventTooltip(events ?? [])}`}
+            >
+              AI {events?.length ?? 0}
+            </span>
+          )}
           {effectiveRisk !== "none" && (
             <span className="ml-auto flex items-center gap-0.5 rounded bg-[#FFFAEB] px-1 py-0.5 text-[8px] font-medium text-[#B54708]">
               <CircleAlert size={9} />

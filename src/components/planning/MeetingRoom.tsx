@@ -52,6 +52,8 @@ const actionLabels: Record<ProposalAction["actionType"], string> = {
   CREATE_TASK: "创建任务", CREATE_SUBTASK: "创建执行步骤", UPDATE_TASK: "调整任务",
   UPDATE_SUBTASK: "调整执行步骤", UPDATE_STORY: "调整 Story",
   CREATE_RISK: "登记风险", UPDATE_RISK: "调整风险", ADD_DEPENDENCY: "添加任务依赖",
+  CREATE_DISCUSSION: "发起讨论", BLOCK_TASK: "标记阻塞", REMOVE_DEPENDENCY: "移除任务依赖",
+  UPDATE_DEADLINE: "调整截止日期", CHANGE_ASSIGNEE: "变更负责人", CHANGE_PRIORITY: "变更优先级",
 }
 
 const taskTypeLabels = { frontend: "前端", backend: "后端", database: "数据", test: "测试", design: "设计", devops: "运维" }

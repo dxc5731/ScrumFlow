@@ -755,8 +755,8 @@ Repository ..|> Port : 实现
     impactAnalyses: [],
     sprintPulses: recordById(sprintPulses),
     discussions: recordById(discussions),
-    history: [],
     proposals: {},
+    history: [],
     meetingSessions: {},
     meetingMessages: {},
     workspace: {

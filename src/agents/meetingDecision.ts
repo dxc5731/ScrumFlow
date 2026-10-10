@@ -4,7 +4,7 @@ import { businessChangeSummary, describeBusinessChanges } from "./meetingBusines
 import { buildProjectAnalysisSnapshot } from "./meetingSnapshot"
 import { asksForExistingTaskStatus, asksForNewWork, buildMeetingContext, focusedMeetingSession, memoryFor, understandMeetingTurn, updateMeetingFocus } from "./meetingContext"
 import { draftMeetingWork } from "./meetingWorkDraft"
-import { isMaterialRequest } from "./materialSchema"
+import { isMaterialFollowUp, isMaterialRequest } from "./materialSchema"
 import { digitalMemberAnswer } from "./digitalMember"
 import { getMeetingLlmTelemetry, meetingLlm, type MeetingLlm } from "./meetingLlm"
 import { canComputeMeetingExplanation, canParseMeetingTurnLocally } from "./meetingCallPolicy"
@@ -18,6 +18,7 @@ import { activePlanRevision, commitPlanOptions, restoreWorkingState, synchronize
 import { buildMaterialEvidenceBundle, describeMeetingEvidence } from "./materialEvidence"
 import { meetingDiagnosis } from "./meetingDiagnosis"
 import { meetingHandoff, requestsPlanReview, requestsPlanRevision } from "./meetingHandoff"
+import { analyzeMeetingRequest } from "./meetingRequest"
 
 export interface MeetingTurnResult { answer: AgentAnswer; memory: MeetingMemory; completedAgents: AgentType[]; digitalMemberId?: string; warnings: string[]; snapshotVersion: string; resolvedIntent: string; llmFallback: boolean; llmReplyUsed: boolean }
 
@@ -30,7 +31,14 @@ export async function coordinateMeetingTurn(
     if (mention.agentId !== "auto" || mention.memberId) { agentId = mention.agentId; question = mention.question; memberId = mention.memberId }
   }
   const memory = synchronizeWorkingState(restoreWorkingState(memoryFor(session)), state, session)
-  const previous = memory.workingState!.activeAgent
+  const activeAgent = memory.workingState!.activeAgent
+  const materialRequested = isMaterialRequest(question) || isMaterialFollowUp(question)
+  const reviewRequested = requestsPlanReview(question)
+  const newWorkRequested = asksForNewWork(question)
+  const previous = activeAgent === "material_organizer" && !materialRequested ||
+    activeAgent === "plan_execution" && !reviewRequested && !newWorkRequested
+    ? null : activeAgent
+  if (agentId === "material_organizer" && !materialRequested || agentId === "plan_execution" && !reviewRequested && !newWorkRequested) agentId = "project_orchestrator"
   const resolved = memberId ?? (agentId !== "auto" ? agentId : previous ?? "auto")
   const digital = state.members[resolved] ? resolved : undefined
   const handoff = !digital && (agentId === "project_orchestrator" || agentId === "auto" && resolved === "auto") ? meetingHandoff(question) : null
@@ -57,7 +65,8 @@ async function coordinateResolvedTurn(
   const previousFocus = memoryFor(session).focusStoryIds
   const previousSprintId = memoryFor(session).focusSprintId
   const memory = updateMeetingFocus(state, session, memoryFor(session), question)
-  if (memory.pendingAssignment && /那就按这个方案|就按这个安排|确认.*转给|按刚才.*方案/.test(question)) {
+  const request = analyzeMeetingRequest(question)
+  if (memory.pendingAssignment && /那就按这个方案|就按这个安排|确认.*转给|按刚才.*方案/.test(request.commandText)) {
     const { taskId, memberId: assigneeId } = memory.pendingAssignment
     memory.constraints.assignmentOverrides[taskId] = assigneeId
     const scoped = focusedMeetingSession(state, session, memory)
@@ -72,8 +81,8 @@ async function coordinateResolvedTurn(
   }
   const focusedSession = { ...session, memory }
   const context = buildMeetingContext(state, focusedSession)
-  if (agentId === "material_organizer" || agentId === "auto" && !memberId && isMaterialRequest(question) || agentId === "auto" && !memberId &&
-    memory.lastAgentType === "material_organizer" && /这份|这张|刚才.*(?:图|文档|材料)|改成|补充.*章节|再具体|继续完善|重新生成/.test(question)) {
+  if (agentId === "material_organizer" && (isMaterialRequest(question) || isMaterialFollowUp(question)) || agentId === "auto" && !memberId && isMaterialRequest(question) || agentId === "auto" && !memberId &&
+    memory.lastAgentType === "material_organizer" && isMaterialFollowUp(question)) {
     const { generateMeetingMaterials } = await import("./materialOrganizer")
     synchronizeWorkingState(memory)
     const answer = await generateMeetingMaterials(state, { ...session, memory }, context, question)

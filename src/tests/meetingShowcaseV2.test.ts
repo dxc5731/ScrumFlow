@@ -1,3 +1,5 @@
+import { usePlanningFixtureClock } from "./planningFixtureClock"
+
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { beforeEach, describe, expect, it } from "vitest"
@@ -5,6 +7,8 @@ import { agentName } from "../agents/meetingConversation"
 import { buildMeetingQaReport, formatMeetingQaReport } from "../agents/meetingQa"
 import { openShowcaseV2Meeting, showcaseV2Marker } from "../agents/meetingShowcaseV2"
 import { resetProjectStoreForTests, useProjectStore } from "../store/projectStore"
+
+usePlanningFixtureClock()
 
 describe("Showcase V2 long meeting", () => {
   beforeEach(() => resetProjectStoreForTests())

@@ -1,3 +1,5 @@
+import { usePlanningFixtureClock } from "./planningFixtureClock"
+
 import { beforeEach, describe, expect, it } from 'vitest'
 import { coordinateMeetingTurn } from '../agents/meetingDecision'
 import { revalidateReviewedProposal } from '../agents/meetingFinalRevalidation'
@@ -10,6 +12,8 @@ import { validateReplyClaims } from '../agents/meetingClaims'
 import { parseModelObject } from '../agents/meetingLlm'
 import { compareProjectStories } from '../agents/projectMeeting'
 const offline: MeetingLlm = { interpret: async () => null, explain: async () => null }
+
+usePlanningFixtureClock()
 
 describe('frozen plan, final review and material evidence', () => {
  beforeEach(() => resetProjectStoreForTests())

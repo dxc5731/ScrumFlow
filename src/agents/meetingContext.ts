@@ -3,19 +3,21 @@ import type {
   MeetingSession, PlanOption, ProjectDataState,
 } from "../types"
 import { mergeMeetingConstraints } from "./meetingWorkingState"
+import { analyzeMeetingRequest } from "./meetingRequest"
+import { requestsPlanReview } from "./meetingHandoff"
 
 export type MeetingIntent = "plan" | "risk" | "workload" | "execute" | "compare" | "select" | "diagnose" | "summary" | "other"
 
 export function asksForNewWork(question: string): boolean {
   if (/(?:只|逐条|全部).{0,8}(?:采纳|驳回)|(?:新步骤|子任务).*工时.*(?:还是|口径)|(?:工时|估算).{0,12}新增投入/.test(question)) return false
-  // Avoiding duplicate creation is a constraint on new work, not a ban on it.
-  const request = question.replace(/(?:不要|别|避免|不)重复(?:新增|添加|创建|生成)/g, "")
-  return !/(?:不要|不用|无需|别|先不|暂不).{0,6}(?:新增|添加|创建|生成|拆解|拆分|拆细|细化)/.test(request) &&
-    /(?:新增|添加|增加|补充|创建|生成|拆解|拆分|拆一下|细化|拆细)[\s\S]{0,40}(?:任务|工作项|步骤|待办)|(?:任务|工作(?:项)?)[\s\S]{0,30}(?:拆成|拆开|拆一下|细化|拆细)|再拆细|再细化|拆得更细/i.test(request)
+  const request = analyzeMeetingRequest(question)
+  return !request.deniesProposal &&
+    /(?:新增|添加|增加|补充|创建|生成|拆解|拆分|拆一下|细化|拆细)[^；]{0,40}(?:任务|工作项|步骤|待办)|(?:任务|工作(?:项)?)[^；]{0,30}(?:拆成|拆开|拆一下|细化|拆细)|再拆细|再细化|拆得更细/i.test(request.commandText)
 }
 
 export function asksForExistingTaskStatus(question: string): boolean {
-  if (asksForNewWork(question) || /拆成|执行方案|任务总估算/.test(question) || /(?:重新拆|规划|安排|指派|分配).{0,12}(?:任务|工作项)/.test(question)) return false
+  const commandText = analyzeMeetingRequest(question).commandText
+  if (asksForNewWork(question) || /拆成|执行方案|任务总估算/.test(commandText) || /(?:重新拆|规划|安排|指派|分配).{0,12}(?:任务|工作项)/.test(commandText)) return false
   if (/(?:US\d+|Story|这个故事).{0,8}(?:当前|现在)?(?:状态|进度).{0,6}(?:是什么|怎么样|如何|[？?])/i.test(question)) return true
   return /(?:下级|现有|已有|当前|所有|全部).{0,6}(?:任务|工作项)|(?:任务|工作项).{0,12}(?:完成|状态|进度|列表|明细)|(?:完成|未完成).{0,10}(?:任务|工作项)|(?:列出|展示|查看|看看|显示).{0,12}(?:任务|工作项)/.test(question)
 }
@@ -239,6 +241,9 @@ export function understandMeetingTurn(
   explicitAgent: AgentType | null = null,
   llmHints?: Partial<{ intent: MeetingIntent; selectedOptionId: string; memberName: string; taskName: string; maxPeople: number; maxDays: number }>,
 ): TurnUnderstanding {
+  const request = analyzeMeetingRequest(question)
+  const directives = request.planningText
+  const constraintText = request.constraintText
   const memory = memoryFor(session)
   const constraints = structuredClone(memory.constraints)
   const savedTasks = allPlanTasks(memory)
@@ -266,48 +271,48 @@ export function understandMeetingTurn(
     .sort((a, b) => question.indexOf(a.name) - question.indexOf(b.name))
   const memberIds = (namedMembers.length ? namedMembers : Object.values(state.members).filter(member => llmHints?.memberName === member.name)).map(member => member.id)
   const memberId = memberIds[0] ?? null
-  const maxPeople = boundedNumber(question, "人", 12) ?? (llmHints?.maxPeople && llmHints.maxPeople >= 1 && llmHints.maxPeople <= 12 ? llmHints.maxPeople : null)
-  const maxDays = boundedNumber(question, "天", 60) ?? (llmHints?.maxDays && llmHints.maxDays >= 1 && llmHints.maxDays <= 60 ? llmHints.maxDays : null)
-  const maxHours = boundedNumber(question, "小时", 1000)
+  const maxPeople = boundedNumber(directives, "人", 12)
+  const maxDays = boundedNumber(directives, "天", 60)
+  const maxHours = boundedNumber(directives, "小时", 1000)
   let changedConstraints = false
   for (const member of namedMembers) {
     const escaped = member.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    if (new RegExp(`${escaped}.{0,4}(不能|不准|不要|别).{0,4}(参与|参加|负责|接|做)|(?:先不|暂不|不|不要|别)(?:安排|分配给|让)${escaped}`).test(question)) {
+    if (new RegExp(`${escaped}.{0,4}(不能|不准|不要|别).{0,4}(参与|参加|负责|接|做)|(?:先不|暂不|不|不要|别)(?:安排|分配给|让)${escaped}`).test(constraintText)) {
       constraints.excludedMemberIds = [...new Set([...constraints.excludedMemberIds, member.id])]
       changedConstraints = true
     }
   }
-  if (maxPeople && /只有|只允许|按|改成|换成|最多|并行|拆|完成/.test(question)) {
-    if (/只能|只有|只允许|最多/.test(question)) { constraints.maxPeople = maxPeople; constraints.requiredPeople = /只能|只有|只允许/.test(question) ? maxPeople : null }
+  if (maxPeople && /只有|只允许|按|改成|换成|最多|并行|拆|完成/.test(constraintText)) {
+    if (/只能|只有|只允许|最多/.test(constraintText)) { constraints.maxPeople = maxPeople; constraints.requiredPeople = /只能|只有|只允许/.test(constraintText) ? maxPeople : null }
     else { constraints.maxPeople = maxPeople; constraints.requiredPeople = maxPeople }
     changedConstraints = true
   }
-  if (maxDays && /工期|压到|最多|完成|以内|放宽|上限/.test(question)) { constraints.maxDays = maxDays; changedConstraints = true }
-  if (maxHours && /总工时|总共|最多|上限|控制在/.test(question)) { constraints.maxHours = maxHours; changedConstraints = true }
-  if (/并行|同步推进/.test(question)) { constraints.parallel = true; changedConstraints = true }
-  if (/前后端|前端.*后端|后端.*前端/.test(question)) { constraints.frontendBackend = true; constraints.parallel = true; changedConstraints = true }
-  if (/(不拆|不要拆|别拆|不需要|不要强行生成).{0,8}(子任务|Subtask)/i.test(question)) { constraints.allowSubtasks = false; changedConstraints = true }
-  if (/(可以|继续|需要).{0,8}(拆|保留).{0,8}(子任务|Subtask)/i.test(question)) { constraints.allowSubtasks = true; changedConstraints = true }
-  if (/尽量少改|保留.*已有|保留前两个/.test(question)) { constraints.preserveExisting = true; changedConstraints = true }
-  if (/已有任务全部保留|不要动已经开始|不能改正在进行/.test(question)) { constraints.preserveExisting = true; constraints.lockStartedTasks = true; changedConstraints = true }
-  if (/不要动.*前两个|前两个.{0,8}不要动|保留前两个|前两个.{0,8}保留/.test(question)) {
+  if (maxDays && /工期|压到|最多|完成|以内|放宽|上限/.test(constraintText)) { constraints.maxDays = maxDays; changedConstraints = true }
+  if (maxHours && /总工时|总共|最多|上限|控制在/.test(constraintText)) { constraints.maxHours = maxHours; changedConstraints = true }
+  if (/并行|同步推进/.test(directives)) { constraints.parallel = true; changedConstraints = true }
+  if (/前后端|前端.*后端|后端.*前端/.test(directives)) { constraints.frontendBackend = true; constraints.parallel = true; changedConstraints = true }
+  if (/(不拆|不要拆|别拆|不需要|不要强行生成).{0,8}(子任务|Subtask)/i.test(constraintText)) { constraints.allowSubtasks = false; changedConstraints = true }
+  if (/(可以|继续|需要).{0,8}(拆|保留).{0,8}(子任务|Subtask)/i.test(directives)) { constraints.allowSubtasks = true; changedConstraints = true }
+  if (/尽量少改|保留.*已有|保留前两个/.test(constraintText)) { constraints.preserveExisting = true; changedConstraints = true }
+  if (/已有任务全部保留|不要动已经开始|不能改正在进行/.test(constraintText)) { constraints.preserveExisting = true; constraints.lockStartedTasks = true; changedConstraints = true }
+  if (/不要动.*前两个|前两个.{0,8}不要动|保留前两个|前两个.{0,8}保留/.test(constraintText)) {
     constraints.lockedTaskKeys = [...new Set([...constraints.lockedTaskKeys, ...planTasks.slice(0, 2).map((task) => task.key)])]
     constraints.lockedTasks = { ...constraints.lockedTasks, ...Object.fromEntries(planTasks.slice(0, 2).map((task) => [task.key, structuredClone(task)])) }
     changedConstraints = true
   }
-  if (/只拆后端|只要后端工作/.test(question)) { constraints.backendOnly = true; changedConstraints = true }
-  if (/恢复全部工作|前后端都要/.test(question)) { constraints.backendOnly = false; changedConstraints = true }
-  if (/重新安排所有|不用保留原有/.test(question)) { constraints.preserveExisting = false; changedConstraints = true }
+  if (/只拆后端|只要后端工作/.test(constraintText)) { constraints.backendOnly = true; changedConstraints = true }
+  if (/恢复全部工作|前后端都要/.test(constraintText)) { constraints.backendOnly = false; changedConstraints = true }
+  if (/重新安排所有|不用保留原有/.test(constraintText)) { constraints.preserveExisting = false; changedConstraints = true }
   if (memberId) {
     const name = state.members[memberId].name
-    if (new RegExp(`${name}.{0,4}(不能|不准|不要|别).{0,4}(参与|参加|负责|接|做)`).test(question)) {
+    if (new RegExp(`${name}.{0,4}(不能|不准|不要|别).{0,4}(参与|参加|负责|接|做)`).test(constraintText)) {
       constraints.excludedMemberIds = [...new Set([...constraints.excludedMemberIds, memberId])]
       changedConstraints = true
-    } else if (new RegExp(`${name}.{0,5}(可以|能).{0,3}(参与|参加|负责|接|做|了)`).test(question)) {
+    } else if (new RegExp(`${name}.{0,5}(可以|能).{0,3}(参与|参加|负责|接|做|了)`).test(constraintText)) {
       constraints.excludedMemberIds = constraints.excludedMemberIds.filter((id) => id !== memberId)
       changedConstraints = true
-    } else if (/换成|换给|交给|改给|给.*负责|负责人.*改|负责人.*换|第.{0,4}个任务给/.test(question)) {
-      const assignedOrdinal = question.match(/第([一二两三四五六七八九十\d]+)个(?:任务|工作项)?.{0,8}(?:换给|换成|交给|改给|改成|给)/)
+    } else if (/换成|换给|交给|改给|给.*负责|负责人.*改|负责人.*换|第.{0,4}个任务给/.test(directives)) {
+      const assignedOrdinal = directives.match(/第([一二两三四五六七八九十\d]+)个(?:任务|工作项)?.{0,8}(?:换给|换成|交给|改给|改成|给)/)
       const assignedIndex = assignedOrdinal ? boundedNumber(`${assignedOrdinal[1]}个`, "", 10) : null
       const assignmentKeys = assignedIndex && planTasks[assignedIndex - 1]
         ? [planTasks[assignedIndex - 1].key]
@@ -318,39 +323,39 @@ export function understandMeetingTurn(
       changedConstraints = true
     }
   }
-  if (memberId && /只能做测试|只负责测试/.test(question)) {
+  if (memberId && /只能做测试|只负责测试/.test(constraintText)) {
     constraints.testOnlyMemberIds = [...new Set([...constraints.testOnlyMemberIds, memberId])]
     changedConstraints = true
   }
-  if (/只允许/.test(question) && memberIds.length > 0 && /和|、/.test(question)) {
+  if (/只允许/.test(constraintText) && memberIds.length > 0 && /和|、/.test(constraintText)) {
     constraints.allowedMemberIds = memberIds
     changedConstraints = true
   }
-  if (/最后一个不要|第三个不要/.test(question)) {
-    const key = /第三个/.test(question) ? planTasks[2]?.key : planTasks.at(-1)?.key
+  if (/最后一个不要|第三个不要/.test(constraintText)) {
+    const key = /第三个/.test(constraintText) ? planTasks[2]?.key : planTasks.at(-1)?.key
     if (key) { constraints.removedTaskKeys = [...new Set([...constraints.removedTaskKeys, key])]; changedConstraints = true }
   }
-  if (/第三个重新拆/.test(question) && planTasks[2]) {
+  if (/第三个重新拆/.test(constraintText) && planTasks[2]) {
     constraints.removedTaskKeys = [...new Set([...constraints.removedTaskKeys, planTasks[2].key])]
     changedConstraints = true
   }
   const sprint = Object.values(state.sprints).find((item) => question.includes(item.name))
-  if (sprint && /(?:目标|安排到|移到|转到|改到|放到|规划到).{0,12}#?Sprint/i.test(question)) {
+  if (sprint && /(?:目标|安排到|移到|转到|改到|放到|规划到).{0,12}#?Sprint/i.test(directives)) {
     constraints.targetSprintId = sprint.id; changedConstraints = true
   }
 
-  const selected = question.match(/(?:选|用|按|方案)\s*(?:方案)?\s*([ABC])\b/i)?.[1]?.toUpperCase() ?? llmHints?.selectedOptionId?.toUpperCase()
+  const selected = request.commandText.match(/(?:选|用|按|方案)\s*(?:方案)?\s*([ABC])\b/i)?.[1]?.toUpperCase()
   const selectedOptionId = selected === "A" || selected === "B" || selected === "C" ? selected
-    : /选最终方案|确认最终方案|就按最终方案/.test(question) ? memory.activePlanId : null
-  const merge = question.match(/负责人(?:按|照|用)\s*(?:方案)?\s*([ABC])/i)?.[1]?.toUpperCase()
+    : /选最终方案|确认最终方案|就按最终方案/.test(request.commandText) ? memory.activePlanId : null
+  const merge = directives.match(/负责人(?:按|照|用)\s*(?:方案)?\s*([ABC])/i)?.[1]?.toUpperCase()
   const mergeAssignmentsFrom = merge === "A" || merge === "B" || merge === "C" ? merge : null
   const delayDays = /延期|晚|推迟/.test(question) ? boundedNumber(question, "天", 60) : null
-  const removeDependency = /依赖.{0,8}(去掉|取消|解除)|(?:去掉|取消|解除).{0,30}依赖/.test(question)
+  const removeDependency = /依赖.{0,8}(去掉|取消|解除)|(?:去掉|取消|解除).{0,30}依赖/.test(directives)
 
   let intent: MeetingIntent = "other"
   if (asksForExistingTaskStatus(question)) intent = "other"
   else if (/总结|回顾|会议记录|实际(?:执行|应用)(?:结果|情况)|写入了什么/.test(question)) intent = "summary"
-  else if (/执行|落地|生成执行计划|最终方案整理|最终决定/.test(question)) intent = "execute"
+  else if (requestsPlanReview(question)) intent = "execute"
   else if (/比较|区别|哪个方案|还有别的办法|更少的方案/.test(question)) intent = "compare"
   else if (selectedOptionId) intent = "select"
   else if (/[一二三四五六七八九十\d]+\s*天.{0,8}(不可行|做不完|完不成|不够)/.test(question)) intent = "plan"
@@ -366,6 +371,13 @@ export function understandMeetingTurn(
   } else if (intent === "other" && changedConstraints) intent = memory.currentTopic === "workload" ? "workload" : "plan"
   else if (intent === "other" && !asksForExistingTaskStatus(question) && llmHints?.intent) intent = llmHints.intent
   else if (intent === "other" && !asksForExistingTaskStatus(question) && ["plan", "risk", "workload", "execute", "compare", "select", "diagnose", "summary"].includes(memory.currentTopic)) intent = memory.currentTopic as MeetingIntent
+
+  // 助手选择、上一轮状态和模型推断都不能替本轮用户授权提交行动建议。
+  if (intent === "execute" && !requestsPlanReview(question)) {
+    intent = /比较|区别|方案/.test(request.topicText) ? "compare"
+      : /风险|依赖|影响/.test(request.topicText) ? "risk"
+        : /容量|负载/.test(request.topicText) ? "workload" : "other"
+  }
 
   const merged = mergeMeetingConstraints(memory.constraints, question, state, planTasks)
   Object.assign(constraints, { people: merged.people, requiredPeople: merged.requiredPeople, maxPeople: merged.maxPeople,

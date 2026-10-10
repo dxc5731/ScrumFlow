@@ -1,3 +1,5 @@
+import { usePlanningFixtureClock } from "./planningFixtureClock"
+
 import { beforeEach, describe, expect, it } from "vitest"
 import { createMeetingMemory } from "../agents/meetingContext"
 import { commitPlanOptions, mergeMeetingConstraints, synchronizeWorkingState } from "../agents/meetingWorkingState"
@@ -8,6 +10,8 @@ import type { MeetingLlm } from "../agents/meetingLlm"
 import { openShowcaseV2Meeting } from "../agents/meetingShowcaseV2"
 
 const offline: MeetingLlm = { interpret: async () => ({ intent: "other", maxPeople: 9 }), explain: async () => null }
+usePlanningFixtureClock()
+
 describe("canonical meeting state and plan revisions", () => {
  beforeEach(() => resetProjectStoreForTests())
  it("preserves the established reviewed showcase execution", async()=>{

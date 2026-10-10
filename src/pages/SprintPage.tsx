@@ -13,6 +13,7 @@ import {
   Clock3,
 } from "lucide-react"
 import Modal from "../components/planning/Modal"
+import EventInsightPanel from "../components/planning/EventInsightPanel"
 import MeetingRoom from "../components/planning/MeetingRoom"
 import { notify } from "../components/planning/ui"
 import {
@@ -294,6 +295,9 @@ export default function SprintPage() {
               </section>
 
               <div className="space-y-4">
+                <section className="rounded-lg border border-[#E9D7FE] bg-[#FCFAFF] p-3">
+                  <EventInsightPanel target={{ type: "sprint", id: sprint.id }} />
+                </section>
                 <section>
                   <h3 className="mb-2 text-[11px] font-semibold text-[#475467]">成员任务负载（工时）</h3>
                   <div className="space-y-2 rounded-lg border border-[#E2E7EE] bg-white p-3">

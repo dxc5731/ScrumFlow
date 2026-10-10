@@ -1,3 +1,5 @@
+import { usePlanningFixtureClock } from "./planningFixtureClock"
+
 import { beforeEach, describe, expect, it } from "vitest"
 import { businessChangeSummary, describeBusinessChanges } from "../agents/meetingBusinessSummary"
 import { validatePlanAgainstConstraints } from "../agents/meetingConstraintValidator"
@@ -7,6 +9,8 @@ import type { MeetingLlm } from "../agents/meetingLlm"
 import { createPlanOptions } from "../agents/meetingPlanning"
 import { resetProjectStoreForTests, useProjectStore } from "../store/projectStore"
 import type { ProposalAction } from "../types"
+
+usePlanningFixtureClock()
 
 describe("meeting hard constraint regression", () => {
   beforeEach(() => resetProjectStoreForTests())
