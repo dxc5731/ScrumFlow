@@ -1,5 +1,6 @@
 import { buildProjectAnalysisSnapshot, type ProjectAnalysisSnapshot } from "./meetingSnapshot"
 import { requestsDirectMutation } from "./meetingRequest"
+import { roundHours, taskContributions } from "../utils/workloadAnalysis"
 import type { MeetingMemory, MeetingSession, ProjectDataState, TaskEntity } from "../types"
 
 export interface DigitalMemberAnswer { memberId: string; content: string; evidence: string[]; suggestedTaskId?: string }
@@ -9,12 +10,7 @@ const statusName: Record<TaskEntity["status"], string> = {
 }
 
 function remaining(state: ProjectDataState, task: TaskEntity, memberId: string) {
-  if (task.status === "done") return 0
-  if (!task.subtaskIds.length) return task.assigneeId === memberId ? task.estimate : 0
-  return task.subtaskIds.reduce((sum, id) => {
-    const subtask = state.subtasks[id]
-    return sum + (subtask?.assigneeId === memberId && subtask.status !== "done" ? subtask.estimate : 0)
-  }, 0)
+  return taskContributions(state, task)[memberId] ?? 0
 }
 
 export function digitalMemberAnswer(state: ProjectDataState, session: MeetingSession, memory: MeetingMemory, memberId: string, question: string,
@@ -23,9 +19,9 @@ export function digitalMemberAnswer(state: ProjectDataState, session: MeetingSes
   if (!member) throw new Error("项目成员不存在")
   const ownTasks = Object.values(state.tasks).filter((task) => task.assigneeId === memberId || task.subtaskIds.some((id) => state.subtasks[id]?.assigneeId === memberId))
   const unfinished = ownTasks.filter((task) => remaining(state, task, memberId) > 0)
-  const total = unfinished.reduce((sum, task) => sum + remaining(state, task, memberId), 0)
+  const total = roundHours(unfinished.reduce((sum, task) => sum + remaining(state, task, memberId), 0))
   const focused = unfinished.filter((task) => memory.focusTaskIds.includes(task.id) || memory.focusStoryIds.includes(task.storyId))
-  const focusedHours = focused.reduce((sum, task) => sum + remaining(state, task, memberId), 0)
+  const focusedHours = roundHours(focused.reduce((sum, task) => sum + remaining(state, task, memberId), 0))
   const blocked = unfinished.filter((task) => task.status === "blocked" || task.subtaskIds.some((id) => state.subtasks[id]?.assigneeId === memberId && state.subtasks[id].status === "blocked"))
   const ownStoryIds = new Set([
     ...Object.values(state.stories).filter((story) => story.assigneeId === memberId || story.collaboratorIds.includes(memberId)).map((story) => story.id),
@@ -33,7 +29,7 @@ export function digitalMemberAnswer(state: ProjectDataState, session: MeetingSes
   ])
   const currentSprint = analysis.focusedSprint ? state.sprints[analysis.focusedSprint.id] : null
   const remainingDays = analysis.focusedSprint?.remainingWorkingDays ?? 0
-  const capacity = Math.round((analysis.members[memberId]?.dailyHours ?? 0) * remainingDays)
+  const capacity = analysis.members[memberId]?.remainingTimeCapacity ?? 0
   const sprintTasks = currentSprint ? unfinished.filter((task) => state.stories[task.storyId]?.sprintId === currentSprint.id) : unfinished
   const sprintHours = analysis.members[memberId]?.currentSprintWorkload ?? sprintTasks.reduce((sum, task) => sum + remaining(state, task, memberId), 0)
   const mentioned = Object.values(state.tasks).find((task) =>

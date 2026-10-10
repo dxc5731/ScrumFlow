@@ -11,11 +11,12 @@ export interface ExecutionSummary {
 
 export function describeExecutionForChat(summary: ExecutionSummary): string {
   const changes = summary.headline.replace(/^实际执行：/, "").replace(/ · /g, "，")
-  const rejected = summary.notExecuted.length
+  const existing = summary.notExecuted.filter(item => item.includes("本次未重复写入")).length
+  const rejected = summary.notExecuted.length - existing
   const rejectedDependencies = summary.notExecuted.filter((item) => item.startsWith("一条建议依赖")).length
   const reviewed = summary.reviewedChanges.length
   const rejectedText = rejected === rejectedDependencies ? `${rejected} 条建议依赖` : `${rejected} 项建议`
-  return `计划已应用。\n${changes}${rejected ? `；${rejectedText}按你的决定未执行` : ""}${reviewed ? `；审核阶段有 ${reviewed} 项人工调整` : ""}。`
+  return `计划已应用。\n${changes}${existing ? `；${existing} 项复用已有结果，未重复写入` : ""}${rejected ? `；${rejectedText}按你的决定未执行` : ""}${reviewed ? `；审核阶段有 ${reviewed} 项人工调整` : ""}。`
 }
 
 function taskName(state: ProjectDataState, id: string): string {
@@ -58,12 +59,19 @@ export function buildExecutionSummary(state: ProjectDataState, proposals: AgentP
       continue
     }
     if (action.status !== "applied") continue
+    if (action.executionOutcome === "existing") {
+      notExecuted.push(`${String(action.proposedValue.title ?? action.targetId)}已有处理结果，本次未重复写入`)
+      continue
+    }
     const hasHistory = state.history.some((item) => item.proposalId === proposal.id && item.proposalActionId === action.id)
     const resultId = action.resultTargetId ?? action.targetId
     const exists = action.actionType === "CREATE_TASK" || action.actionType === "UPDATE_TASK" ? Boolean(state.tasks[resultId])
       : action.actionType === "CREATE_SUBTASK" || action.actionType === "UPDATE_SUBTASK" ? Boolean(state.subtasks[resultId])
         : action.actionType === "ADD_DEPENDENCY" ? Boolean(state.dependencies[resultId])
           : action.actionType === "CREATE_RISK" || action.actionType === "UPDATE_RISK" ? Boolean(state.risks[resultId])
+            : action.actionType === "CREATE_DISCUSSION" ? Boolean(state.discussions[resultId])
+              : action.actionType === "BLOCK_TASK" || action.actionType === "UPDATE_DEADLINE" || action.actionType === "CHANGE_ASSIGNEE" ? Boolean(state.tasks[resultId])
+                : action.actionType === "REMOVE_DEPENDENCY" ? !state.dependencies[resultId]
             : Boolean(state.stories[resultId])
     if (!hasHistory || !exists) {
       discrepancies.push("一项标记为已执行的变更缺少对应项目记录或变更历史，需要复核")

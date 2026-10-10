@@ -2,16 +2,12 @@ import type { MeetingMemory, MeetingSession, ProjectDataState, StoryEntity, Task
 import { remainingBusinessDays } from "./meetingPlanning"
 import { buildProjectAnalysisSnapshot, type ProjectAnalysisSnapshot } from "./meetingSnapshot"
 import { projectPlanCapacity } from './meetingCapacity'
+import { buildWorkloadSnapshot, projectDate, taskContributions } from "../utils/workloadAnalysis"
 
 export interface ProjectFinding { content: string; evidence: string[] }
 
 function pendingHours(state: ProjectDataState, task: TaskEntity): number {
-  if (task.status === "done") return 0
-  if (!task.subtaskIds.length) return task.estimate
-  return task.subtaskIds.reduce((sum, id) => {
-    const subtask = state.subtasks[id]
-    return sum + (subtask && subtask.status !== "done" ? subtask.estimate : 0)
-  }, 0)
+  return Object.values(taskContributions(state, task)).reduce((a, b) => a + b, 0)
 }
 
 function storyFacts(state: ProjectDataState, story: StoryEntity) {
@@ -31,7 +27,7 @@ export function projectOverview(state: ProjectDataState, analysis?: ProjectAnaly
   const sprint = analysis?.activeSprint ?? Object.values(state.sprints).find((item) => item.status === "active") ?? Object.values(state.sprints).find((item) => item.status === "planning")
   const unfinished = Object.values(state.tasks).filter((task) => task.status !== "done")
   const blocked = unfinished.filter((task) => task.status === "blocked")
-  const overdue = unfinished.filter((task) => task.endDate < (analysis?.currentDate ?? new Date().toISOString().slice(0, 10)))
+  const overdue = unfinished.filter((task) => task.endDate < (analysis?.currentDate ?? projectDate()))
   const risks = Object.values(state.risks).filter((risk) => risk.status !== "resolved")
   const high = risks.filter((risk) => risk.level === "high")
   const attention = [
@@ -52,12 +48,12 @@ export function projectOverview(state: ProjectDataState, analysis?: ProjectAnaly
 export function projectMemberOverview(state: ProjectDataState, memberId: string): ProjectFinding {
   const member = state.members[memberId]
   if (!member) return { content: "没有找到这位成员。", evidence: [] }
-  const tasks = Object.values(state.tasks).filter((task) => task.assigneeId === memberId && task.status !== "done")
-  const hours = tasks.reduce((sum, task) => sum + pendingHours(state, task), 0)
+  const tasks = Object.values(state.tasks).filter(task => (taskContributions(state, task)[memberId] ?? 0) > 0)
+  const hours = tasks.reduce((sum, task) => sum + (taskContributions(state, task)[memberId] ?? 0), 0)
   const blocked = tasks.filter((task) => task.status === "blocked")
   return {
     content: `${member.name}目前直接负责 ${tasks.length} 个未完成任务，剩余约 ${hours}h。${blocked.length ? `${blocked.length} 个处于阻塞，` : ""}主要工作是${tasks.slice(0, 3).map((task) => `「${task.title}」`).join("、") || "尚无待办任务"}。这是项目记录里的分工，并不代表成员已经确认新的安排。`,
-    evidence: tasks.map((task) => `${task.id.toUpperCase()} ${task.title}：${pendingHours(state, task)}h，${task.status}，截止 ${task.endDate}`),
+    evidence: tasks.map((task) => `${task.id.toUpperCase()} ${task.title}：${taskContributions(state, task)[memberId] ?? 0}h，${task.status}，截止 ${task.endDate}`),
   }
 }
 
@@ -68,7 +64,7 @@ export function projectSprintCapacity(state: ProjectDataState, sprintId: string,
   const remaining = tasks.reduce((sum, task) => sum + pendingHours(state, task), 0)
   const available = analysis?.sprints[sprintId]
     ? sprint.memberIds.reduce((sum, id) => sum + (analysis.members[id]?.dailyHours ?? 0) * analysis.sprints[sprintId].remainingWorkingDays, 0)
-    : sprint.memberIds.reduce((sum, id) => sum + (state.members[id]?.capacityHours ?? 0), 0)
+    : sprint.memberIds.reduce((sum, id) => sum + (buildWorkloadSnapshot(state, sprintId).members[id]?.remainingTimeCapacity ?? 0), 0)
   return {
     content: `${sprint.name}计划包含 ${tasks.length} 个未完成任务，剩余约 ${remaining}h；按剩余工作日折算，参与成员可用容量约 ${Math.round(available)}h。${analysis?.sprints[sprintId]?.remainingWorkingDays === 0 ? "这一轮已没有剩余工作日，需要确认后续排期。" : "应先扣除已经承诺的工作，再安排新任务。"}`,
     evidence: [`成员：${sprint.memberIds.map((id) => `${state.members[id]?.name ?? id} ${state.members[id]?.capacityHours ?? 0}h/周`).join("、")}`, `Sprint 日期：${sprint.startDate} 至 ${sprint.endDate}`],

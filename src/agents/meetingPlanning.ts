@@ -6,6 +6,7 @@ import { businessChangeSummary, describeBusinessChanges } from "./meetingBusines
 import { buildProjectAnalysisSnapshot, type ProjectAnalysisSnapshot } from "./meetingSnapshot"
 import { projectPlanCapacity, taskContributions } from "./meetingCapacity"
 import { reconcilePlanSteps } from './meetingPlanWork'
+import { buildWorkloadSnapshot, sprintWindow } from "../utils/workloadAnalysis"
 import type {
   AgentProposal, MeetingConstraints, MeetingMemory, MeetingPlanTask, MeetingSession,
   PlanOption, ProjectDataState, ProposalAction, ProposalPrecondition, StoryEntity, TaskEntity,
@@ -49,20 +50,11 @@ export function meetingStories(state: ProjectDataState, session: MeetingSession)
 }
 
 export function memberLoads(state: ProjectDataState, sprintId: string | null): Record<string, number> {
-  const loads = Object.fromEntries(Object.keys(state.members).map((id) => [id, 0])) as Record<string, number>
-  for (const task of Object.values(state.tasks)) {
-    if (state.stories[task.storyId]?.sprintId !== sprintId || task.status === "done") continue
-    const leaves = task.subtaskIds.length ? task.subtaskIds.map((id) => state.subtasks[id]).filter(Boolean) : [task]
-    for (const leaf of leaves) if (leaf.status !== "done") loads[leaf.assigneeId] = (loads[leaf.assigneeId] ?? 0) + leaf.estimate
-  }
-  return loads
+  return Object.fromEntries(Object.entries(buildWorkloadSnapshot(state, sprintId).members).map(([id, member]) => [id, member.currentSprintWorkload]))
 }
 
 export function remainingBusinessDays(state: ProjectDataState, sprintId: string | null, today = new Date()): number {
-  const sprint = sprintId ? state.sprints[sprintId] : null
-  if (!sprint) return 10
-  const start = parseISO(sprint.startDate) > today ? parseISO(sprint.startDate) : today
-  return Math.max(0, differenceInBusinessDays(addBusinessDays(parseISO(sprint.endDate), 1), start))
+  return sprintWindow(state, sprintId, today).remainingWorkingDays
 }
 
 function dailyCapacity(state: ProjectDataState, memberId: string): number {

@@ -15,8 +15,11 @@ import {
   SettingsPage,
 } from "./pages/ManagementPages";
 import { useProjectStore } from "./store/projectStore";
+import { useEventMonitor } from "./hooks/useEventMonitor";
+import LocalSaveStatus from "./components/planning/LocalSaveStatus";
 
 export default function App() {
+  useEventMonitor();
   const workspace = useProjectStore((state) => state.workspace);
   const planningPage = ["story-map", "gantt", "board"].includes(workspace.currentPage);
   const hideCollapsedInspector = workspace.currentPage === "story-map" && workspace.backlogFullscreen && !workspace.inspectorOpen;
@@ -35,6 +38,7 @@ export default function App() {
   return (
     <div className="flex h-full flex-col bg-[#F8FAFC]">
       <CanvasTopBar />
+      <LocalSaveStatus />
       <div className="flex min-h-0 flex-1">
         <main className="min-w-0 flex-1 overflow-hidden">
           <div key={workspace.currentPage} className="page-enter h-full">

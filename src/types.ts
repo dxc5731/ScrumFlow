@@ -470,6 +470,7 @@ export interface ProposalAction {
   resultTargetId: string | null
   appliedAt: string | null
   error: string | null
+  executionOutcome?: "written" | "existing"
 }
 
 export interface AgentProposal {
@@ -801,6 +802,17 @@ export interface WorkspaceState {
   } | null
 }
 
+export interface ProjectEventRecord {
+  id: string
+  sprintId: string
+  event: import("./utils/eventDetection").DetectedEvent
+  fingerprint: string
+  status: "new" | "pending" | "suggested" | "resolved" | "ignored"
+  proposalId: string | null
+  firstSeenAt: string
+  updatedAt: string
+}
+
 export interface ProjectDataState {
   schemaVersion: number
   project: ProjectEntity
@@ -821,6 +833,7 @@ export interface ProjectDataState {
   discussions: Record<string, DiscussionMessageEntity>
   history: ChangeHistoryItem[]
   proposals: Record<string, AgentProposal>
+  projectEvents: Record<string, ProjectEventRecord>
   meetingSessions: Record<string, MeetingSession>
   meetingMessages: Record<string, MeetingMessage>
   workspace: WorkspaceState

@@ -756,6 +756,7 @@ Repository ..|> Port : 实现
     sprintPulses: recordById(sprintPulses),
     discussions: recordById(discussions),
     proposals: {},
+    projectEvents: {},
     history: [],
     meetingSessions: {},
     meetingMessages: {},

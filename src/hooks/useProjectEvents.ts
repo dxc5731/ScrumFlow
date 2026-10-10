@@ -1,6 +1,5 @@
 import { useMemo } from "react"
 import {
-  detectProjectEvents,
   type DetectedEvent,
   type EventSeverity,
 } from "../utils/eventDetection"
@@ -80,7 +79,7 @@ export function useProjectEvents(sprintId?: string): ProjectEventIndex {
   const state = useProjectStore()
   const targetSprint = sprintId ?? state.workspace.selectedSprintId
   return useMemo(
-    () => buildEventIndex(state, detectProjectEvents(state, targetSprint, new Date())),
+    () => buildEventIndex(state, Object.values(state.projectEvents).filter(record => record.sprintId === targetSprint && !["resolved", "ignored"].includes(record.status)).map(record => record.event)),
     [state, targetSprint],
   )
 }
@@ -92,9 +91,8 @@ export function useAllSprintsEvents(): ProjectEventIndex {
   const key = sprintIds.join(",")
   return useMemo(() => {
     const byId = new Map<string, DetectedEvent>()
-    sprintIds.forEach((id) =>
-      detectProjectEvents(state, id, new Date()).forEach((event) => byId.set(event.id, event)),
-    )
+    Object.values(state.projectEvents).filter(record => !["resolved", "ignored"].includes(record.status))
+      .forEach(record => byId.set(record.id, record.event))
     return buildEventIndex(state, [...byId.values()])
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, key])

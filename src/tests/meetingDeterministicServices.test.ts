@@ -17,7 +17,9 @@ describe("project graph and capacity services",()=>{
   expect(validateDependencyRemoval(state,'data-024','incoming')).toMatchObject({valid:false,candidates:[]})
  })
  it("uses a net reassignment delta, with separate units and unknown estimates",()=>{
-  const state=useProjectStore.getState(), task=state.tasks['data-024']
+  const base=useProjectStore.getState(), task={...base.tasks['data-024'],subtaskIds:[]}
+  // 转派叶子任务会改变实际执行负载；仅修改 WBS 父任务负责人不会转派子任务。
+  const state={...base,tasks:{...base.tasks,[task.id]:task}}
   const plan=[{key:task.id,sourceTaskId:task.id,storyId:task.storyId,title:task.title,type:task.type,estimate:task.estimate,assigneeId:'m3',phase:'test',dependsOnKeys:[],subtaskTitles:[],startDate:task.startDate,endDate:task.endDate}]
   const capacity=projectPlanCapacity(state,'s2',plan,new Date('2026-10-03T12:00:00+08:00'))
   expect(capacity.totalProjectedHours).toBe(capacity.totalCurrentHours)

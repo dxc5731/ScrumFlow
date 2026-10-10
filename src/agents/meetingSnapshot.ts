@@ -1,4 +1,5 @@
-import { addDays, differenceInBusinessDays, differenceInCalendarDays, format, parseISO } from "date-fns"
+import { differenceInCalendarDays, parseISO } from "date-fns"
+import { buildWorkloadSnapshot, projectDate, roundHours, sprintWindow, taskContributions } from "../utils/workloadAnalysis"
 import type { MeetingMemory, MeetingSession, ProjectDataState, SprintStatus, StoryDeliveryStatus, TaskStatus } from "../types"
 
 export interface SprintAnalysis {
@@ -10,6 +11,7 @@ export interface SprintAnalysis {
   endDate: string
   remainingCalendarDays: number
   remainingWorkingDays: number
+  planningWorkingDays: number
 }
 
 export interface StoryAnalysis {
@@ -45,6 +47,8 @@ export interface MemberAnalysis {
   currentSprintWorkload: number
   totalWorkload: number
   remainingCapacity: number
+  remainingTimeCapacity: number
+  planningCapacity: number
   focusedTaskIds: string[]
 }
 
@@ -79,12 +83,7 @@ export interface ProjectAnalysisScope {
 
 export function taskRemainingHours(state: ProjectDataState, taskId: string): number {
   const task = state.tasks[taskId]
-  if (!task || task.status === "done") return 0
-  if (!task.subtaskIds.length) return task.estimate
-  return task.subtaskIds.reduce((sum, id) => {
-    const subtask = state.subtasks[id]
-    return sum + (subtask && subtask.status !== "done" ? subtask.estimate : 0)
-  }, 0)
+  return task ? roundHours(Object.values(taskContributions(state, task)).reduce((a, b) => a + b, 0)) : 0
 }
 
 export function buildProjectAnalysisSnapshot(
@@ -103,16 +102,15 @@ export function buildProjectAnalysisSnapshotForScope(
   state: ProjectDataState, scope: ProjectAnalysisScope, now = new Date(),
 ): ProjectAnalysisSnapshot {
   if (scope.projectId !== state.project.id) throw new Error("Analysis scope does not match the project")
-  const currentDate = format(now, "yyyy-MM-dd")
+  const currentDate = projectDate(now)
   const sprints = Object.fromEntries(Object.values(state.sprints).map((sprint) => {
     const start = sprint.startDate > currentDate ? sprint.startDate : currentDate
     const remainingCalendarDays = sprint.status === "closed" ? 0 : Math.max(0, differenceInCalendarDays(parseISO(sprint.endDate), parseISO(start)) + 1)
-    const remainingWorkingDays = sprint.status === "closed" || sprint.endDate < start ? 0
-      : Math.max(0, differenceInBusinessDays(addDays(parseISO(sprint.endDate), 1), parseISO(start)))
+    const { remainingWorkingDays, planningWorkingDays } = sprintWindow(state, sprint.id, now)
     const value: SprintAnalysis = {
       id: sprint.id, name: sprint.name, status: sprint.status,
       effectiveStatus: sprint.status !== "closed" && sprint.endDate < currentDate ? "overdue" : sprint.status,
-      startDate: sprint.startDate, endDate: sprint.endDate, remainingCalendarDays, remainingWorkingDays,
+      startDate: sprint.startDate, endDate: sprint.endDate, remainingCalendarDays, remainingWorkingDays, planningWorkingDays,
     }
     return [sprint.id, value]
   })) as Record<string, SprintAnalysis>
@@ -134,7 +132,7 @@ export function buildProjectAnalysisSnapshotForScope(
     return [story.id, {
       id: story.id, title: story.title, status: story.deliveryStatus, sprintId: story.sprintId,
       taskCount: storyTasks.length, completedTaskCount: storyTasks.filter((task) => task.status === "done").length,
-      remainingHours: storyTasks.reduce((sum, task) => sum + task.remainingHours, 0), riskCount,
+      remainingHours: roundHours(storyTasks.reduce((sum, task) => sum + task.remainingHours, 0)), riskCount,
       acceptanceCriteriaCount: story.acceptanceCriteriaIds.length,
     }]
   })) as Record<string, StoryAnalysis>
@@ -143,22 +141,15 @@ export function buildProjectAnalysisSnapshotForScope(
   const focusedStory = focusStoryIds.length === 1 ? stories[focusStoryIds[0]] ?? null : null
   const activeSprint = Object.values(sprints).find((item) => item.status === "active") ?? null
   const focusedSprint = sprints[scope.targetSprintId ?? scope.focusSprintId ?? focusedStory?.sprintId ?? (scope.targetType === "sprint" ? scope.targetId : "")] ?? activeSprint
+  const workload = buildWorkloadSnapshot(state, focusedSprint?.id ?? null, now)
   const members = Object.fromEntries(Object.values(state.members).map((member) => {
-    let totalWorkload = 0
-    let currentSprintWorkload = 0
     const focusedTaskIds: string[] = []
     for (const task of Object.values(state.tasks)) {
-      const leaves = task.subtaskIds.length ? task.subtaskIds.map((id) => state.subtasks[id]).filter(Boolean) : [task]
-      const hours = leaves.reduce((sum, leaf) => sum + (leaf.assigneeId === member.id && leaf.status !== "done" ? leaf.estimate : 0), 0)
-      if (!hours || task.status === "done") continue
-      totalWorkload += hours
-      if (state.stories[task.storyId]?.sprintId === focusedSprint?.id) currentSprintWorkload += hours
+      if (!workload.tasks[task.id].byMember[member.id]) continue
       if (focusStoryIds.includes(task.storyId) || scope.focusTaskIds?.includes(task.id)) focusedTaskIds.push(task.id)
     }
-    const dailyHours = Math.max(0, member.capacityHours / 5)
     return [member.id, {
-      id: member.id, name: member.name, dailyHours, currentSprintWorkload, totalWorkload,
-      remainingCapacity: Math.round(dailyHours * (focusedSprint?.remainingWorkingDays ?? 0) - currentSprintWorkload),
+      id: member.id, name: member.name, ...workload.members[member.id],
       focusedTaskIds,
     }]
   })) as Record<string, MemberAnalysis>

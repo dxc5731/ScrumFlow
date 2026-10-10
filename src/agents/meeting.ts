@@ -3,6 +3,9 @@ import type {
   ProposalPrecondition, ProjectDataState, StoryEntity, TaskEntity,
 } from "../types"
 import { addDays, differenceInBusinessDays, parseISO } from "date-fns"
+import { buildWorkloadSnapshot, remainingWork, taskLeaves } from "../utils/workloadAnalysis"
+import { detectProjectEvents } from "../utils/eventDetection"
+import { eventCondition } from "../utils/eventLifecycle"
 
 export interface MeetingStage {
   agentType: AgentType
@@ -47,16 +50,7 @@ function storyConditions(state: ProjectDataState, story: StoryEntity): ProposalP
 }
 
 function memberLoads(state: ProjectDataState, sprintId: string | null) {
-  const loads: Record<string, number> = Object.fromEntries(Object.keys(state.members).map((id) => [id, 0]))
-  for (const task of Object.values(state.tasks)) {
-    const story = state.stories[task.storyId]
-    if (!story || story.sprintId !== sprintId || task.status === "done") continue
-    const leaves = task.subtaskIds.length
-      ? task.subtaskIds.map((id) => state.subtasks[id]).filter(Boolean)
-      : [task]
-    for (const leaf of leaves) loads[leaf.assigneeId] = (loads[leaf.assigneeId] ?? 0) + leaf.estimate
-  }
-  return loads
+  return Object.fromEntries(Object.entries(buildWorkloadSnapshot(state, sprintId).members).map(([id, member]) => [id, member.currentSprintWorkload]))
 }
 
 function affectedTasks(state: ProjectDataState, blockedTaskIds: string[]) {
@@ -74,11 +68,7 @@ function affectedTasks(state: ProjectDataState, blockedTaskIds: string[]) {
 }
 
 function capacity(state: ProjectDataState, sprintId: string | null, memberId: string) {
-  const weekly = state.members[memberId]?.capacityHours ?? 0
-  const sprint = sprintId ? state.sprints[sprintId] : null
-  if (!sprint) return weekly
-  const days = Math.max(1, differenceInBusinessDays(addDays(parseISO(sprint.endDate), 1), parseISO(sprint.startDate)))
-  return Math.round(weekly * days / 5)
+  return buildWorkloadSnapshot(state, sprintId).members[memberId]?.remainingTimeCapacity ?? 0
 }
 
 function availableMember(state: ProjectDataState, loads: Record<string, number>, estimate: number, sprintId: string | null) {
@@ -194,14 +184,19 @@ export function runPlanningMeeting(
       evidence.push({ agentType: "workload_capacity", targetType: "member", targetId: member.id, detail: `${sprintId ?? "Backlog"}：未完成任务 ${hours}h，按 Sprint 工作日折算容量 ${memberCapacity}h` })
       if (hours <= memberCapacity) continue
       workloadFindings.push(`${member.name}：${hours}h / ${memberCapacity}h，存在超载`)
-      const candidate = Object.values(state.tasks).find((task) => state.stories[task.storyId]?.sprintId === sprintId && task.assigneeId === member.id && task.status === "todo")
+      const candidate = Object.values(state.tasks).filter(task => state.stories[task.storyId]?.sprintId === sprintId && task.status !== "done")
+        .flatMap(task => taskLeaves(state, task)).find(leaf => leaf.assigneeId === member.id && leaf.status === "todo")
       if (!candidate) continue
-      const replacement = Object.values(state.members).find((other) => other.id !== member.id && (loads[other.id] ?? 0) + candidate.estimate <= capacity(state, sprintId, other.id))
+      const replacement = Object.values(state.members).find((other) => other.id !== member.id && (loads[other.id] ?? 0) + remainingWork(candidate) <= capacity(state, sprintId, other.id))
       if (!replacement) continue
-      actions.push(action("UPDATE_TASK", "task", candidate.id, { assigneeId: replacement.id },
+      const type = state.tasks[candidate.id] ? "task" as const : "subtask" as const
+      const event = sprintId ? detectProjectEvents(state, sprintId).find(event => event.kind === "workload" && event.targetId === member.id) : undefined
+      actions.push(action(type === "task" ? "UPDATE_TASK" : "UPDATE_SUBTASK", type, candidate.id, { assigneeId: replacement.id },
         `${member.name} 已超载；${replacement.name} 当前 ${loads[replacement.id] ?? 0}h / ${capacity(state, sprintId, replacement.id)}h`,
-        [{ targetType: "task", targetId: candidate.id, field: "assigneeId", expectedValue: member.id },
-          { targetType: "task", targetId: candidate.id, field: "estimate", expectedValue: candidate.estimate }],
+        [{ targetType: type, targetId: candidate.id, field: "assigneeId", expectedValue: member.id },
+          { targetType: type, targetId: candidate.id, field: "estimate", expectedValue: candidate.estimate },
+          { targetType: "member", targetId: replacement.id, field: "capacityHours", expectedValue: replacement.capacityHours },
+          ...(event && sprintId ? [eventCondition(state, event, sprintId)] : [])],
         [], { assigneeId: member.id }))
     }
   }

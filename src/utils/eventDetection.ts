@@ -1,10 +1,9 @@
 import {
   differenceInCalendarDays,
-  eachDayOfInterval,
-  isWeekend,
   parseISO,
 } from "date-fns"
 import type { DependencyEntity, ProjectDataState } from "../types"
+import { buildWorkloadSnapshot } from "./workloadAnalysis"
 import {
   selectCriticalPathTaskIds,
   selectSprintStories,
@@ -22,6 +21,7 @@ export type EventKind =
 export type EventSeverity = "high" | "medium" | "low"
 
 export interface DetectedEvent {
+  sprintId?: string
   id: string
   kind: EventKind
   severity: EventSeverity
@@ -45,23 +45,6 @@ function taskTitle(state: ProjectDataState, id: string) {
   return state.tasks[id]?.title ?? state.subtasks[id]?.title ?? id
 }
 
-/** 周期内可用工时：按成员周容量折算到 Sprint 的实际工作日。 */
-function workingDaysInRange(startDate: string, endDate: string) {
-  try {
-    const days = eachDayOfInterval({ start: parseISO(startDate), end: parseISO(endDate) })
-    return Math.max(1, days.filter((day) => !isWeekend(day)).length)
-  } catch {
-    return 10
-  }
-}
-
-function memberAvailableHours(state: ProjectDataState, memberId: string, sprintId: string) {
-  const member = state.members[memberId]
-  const weekly = member?.capacityHours ?? 40
-  const sprint = state.sprints[sprintId]
-  const workdays = sprint ? workingDaysInRange(sprint.startDate, sprint.endDate) : 10
-  return Math.round((weekly / 5) * workdays)
-}
 
 /** 在 Sprint 任务集合内查找 FS 依赖环。 */
 function findDependencyCycles(
@@ -137,6 +120,7 @@ export function detectProjectEvents(
   const sprintTaskIds = new Set(tasks.map((task) => task.id))
   const criticalPath = selectCriticalPathTaskIds(state)
   const events: DetectedEvent[] = []
+  const workload = buildWorkloadSnapshot(state, sprintId, referenceDate)
 
   const successors = new Map<string, string[]>()
   Object.values(state.dependencies).forEach((dependency) => {
@@ -150,8 +134,8 @@ export function detectProjectEvents(
   tasks
     .filter((task) => task.status !== "done")
     .forEach((task) => {
-      const days = differenceInCalendarDays(parseISO(task.endDate), referenceDate)
-      const remainingHours = Math.max(0, Math.ceil(task.estimate * (1 - task.progress / 100)))
+      const days = differenceInCalendarDays(parseISO(task.endDate), parseISO(workload.currentDate))
+      const remainingHours = workload.tasks[task.id].remainingHours
       if (days < 0 || (days <= 1 && task.progress < 80)) {
         const overdue = days < 0
         const onCriticalPath = criticalPath.has(task.id)
@@ -245,20 +229,10 @@ export function detectProjectEvents(
   })
 
   // 规则 3：成员剩余工时超过周期可用容量
-  const memberHours = new Map<string, { hours: number; taskIds: string[] }>()
-  tasks
-    .filter((task) => task.status !== "done")
-    .forEach((task) => {
-      const remaining = Math.max(0, Math.ceil(task.estimate * (1 - task.progress / 100)))
-      const entry = memberHours.get(task.assigneeId) ?? { hours: 0, taskIds: [] }
-      entry.hours += remaining
-      entry.taskIds.push(task.id)
-      memberHours.set(task.assigneeId, entry)
-    })
-
-  memberHours.forEach((entry, memberId) => {
+  Object.entries(workload.members).forEach(([memberId, value]) => {
+    const entry = { hours: value.currentSprintWorkload, taskIds: tasks.filter(task => workload.tasks[task.id].byMember[memberId] > 0).map(task => task.id) }
     const member = state.members[memberId]
-    const available = memberAvailableHours(state, memberId, sprintId)
+    const available = value.remainingTimeCapacity
     if (entry.hours <= available) return
     const criticalTaskIds = entry.taskIds.filter((id) => criticalPath.has(id))
     events.push({
@@ -270,6 +244,8 @@ export function detectProjectEvents(
       summary: `本周期剩余 ${entry.hours}h，超过可用容量 ${available}h。`,
       evidence: [
         `剩余工时：${entry.hours}h`,
+        `计算日期：${workload.currentDate}（Asia/Shanghai）`,
+        `整轮规划容量：${value.planningCapacity}h；剩余工作日：${workload.remainingWorkingDays}`,
         `周期可用容量：${available}h`,
         `超出：${entry.hours - available}h`,
         `涉及任务：${entry.taskIds.join("、")}`,
@@ -356,5 +332,5 @@ export function detectProjectEvents(
     })
   })
 
-  return events.sort((a, b) => severityRank[b.severity] - severityRank[a.severity])
+  return events.sort((a, b) => severityRank[b.severity] - severityRank[a.severity]).map(event => ({ ...event, sprintId }))
 }

@@ -1,4 +1,5 @@
 import { addDays, differenceInCalendarDays, format, parseISO } from "date-fns"
+import { buildWorkloadSnapshot, projectDate } from "../utils/workloadAnalysis"
 import type {
   AgentProposal,
   AssetLinkTargetType,
@@ -175,7 +176,7 @@ export function selectSprintAssets(state: ProjectDataState, sprintId: string) {
   return selectAssetsForTarget(state, "sprint", sprintId)
 }
 
-export function selectSprintMetrics(state: ProjectDataState, sprintId: string) {
+export function selectSprintMetrics(state: ProjectDataState, sprintId: string, now = new Date()) {
   const stories = selectSprintStories(state, sprintId)
   const tasks = selectSprintTasks(state, sprintId)
   const statusCounts: Record<TaskEntity["status"], number> = {
@@ -185,11 +186,9 @@ export function selectSprintMetrics(state: ProjectDataState, sprintId: string) {
     done: 0,
     blocked: 0,
   }
-  const memberHours: Record<string, number> = {}
+  const memberHours = Object.fromEntries(Object.entries(buildWorkloadSnapshot(state, sprintId, now).members).map(([id, member]) => [id, member.currentSprintWorkload]))
   tasks.forEach((task) => {
     statusCounts[task.status] += 1
-    memberHours[task.assigneeId] =
-      (memberHours[task.assigneeId] ?? 0) + task.estimate
   })
   const subtasks = selectSprintSubtasks(state, sprintId)
   const blockedReasons = [
@@ -569,7 +568,7 @@ export function selectScheduleHealth(
   startDate: string,
   endDate: string,
   actualProgress: number,
-  today = new Date().toISOString().slice(0, 10),
+  today = projectDate(),
 ) {
   const totalDays = Math.max(
     1,
@@ -603,17 +602,19 @@ export function selectTaskVisualState(
   return task.status
 }
 
-export function selectMemberWorkload(state: ProjectDataState, memberId: string) {
-  const member = state.members[memberId]
+export function selectMemberWorkload(state: ProjectDataState, memberId: string, now = new Date(), sprintId = state.workspace.selectedSprintId) {
   const taskLeaves: Array<TaskEntity | SubtaskEntity> = []
   Object.values(state.tasks).forEach((task) => {
+    if (state.stories[task.storyId]?.sprintId !== sprintId) return
     const children = selectTaskSubtasks(state, task.id)
     taskLeaves.push(...(children.length ? children : [task]))
   })
   const allAssigned = taskLeaves.filter((item) => item.assigneeId === memberId)
-  const assigned = allAssigned.filter((item) => item.status !== "done")
-  const plannedHours = assigned.reduce((sum, item) => sum + item.estimate, 0)
-  const capacityHours = member?.capacityHours ?? 0
+  const assigned = allAssigned.filter((item) => item.status !== "done" && !("taskId" in item && state.tasks[item.taskId]?.status === "done"))
+  const snapshot = buildWorkloadSnapshot(state, sprintId, now)
+  const analysis = snapshot.members[memberId]
+  const plannedHours = analysis?.currentSprintWorkload ?? 0
+  const capacityHours = analysis?.remainingTimeCapacity ?? 0
   const utilization = capacityHours
     ? Math.round((plannedHours / capacityHours) * 100)
     : plannedHours
@@ -624,6 +625,10 @@ export function selectMemberWorkload(state: ProjectDataState, memberId: string) 
     taskCount: assigned.length,
     plannedHours,
     capacityHours,
+    planningCapacity: analysis?.planningCapacity ?? 0,
+    totalWorkload: analysis?.totalWorkload ?? 0,
+    remainingCapacity: analysis?.remainingCapacity ?? 0,
+    calculationDate: snapshot.currentDate,
     utilization,
     overdueCount: assigned.filter(
       (item) => selectScheduleHealth(item.startDate, item.endDate, item.progress).overdue,
@@ -657,9 +662,9 @@ export function selectMemberWorkload(state: ProjectDataState, memberId: string) 
   }
 }
 
-export function selectTeamWorkloads(state: ProjectDataState) {
+export function selectTeamWorkloads(state: ProjectDataState, now = new Date(), sprintId = state.workspace.selectedSprintId) {
   return Object.values(state.members)
-    .map((member) => ({ member, ...selectMemberWorkload(state, member.id) }))
+    .map((member) => ({ member, ...selectMemberWorkload(state, member.id, now, sprintId) }))
     .sort((a, b) => b.utilization - a.utilization)
 }
 

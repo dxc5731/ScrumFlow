@@ -1,6 +1,7 @@
 import { addBusinessDays, format, parseISO } from "date-fns"
 import { memberLoads, meetingStories } from "./meetingPlanning"
 import { buildProjectAnalysisSnapshot, type ProjectAnalysisSnapshot } from "./meetingSnapshot"
+import { remainingWork } from "../utils/workloadAnalysis"
 import type { MeetingMemory, MeetingSession, PlanOption, ProjectDataState } from "../types"
 import { projectPlanCapacity } from "./meetingCapacity"
 
@@ -48,7 +49,7 @@ export function workloadAdvice(state: ProjectDataState, snapshot: ProjectAnalysi
   const scopedStep = parent && Object.values(state.subtasks).find(step => step.taskId === parent.id &&
     (question.includes(step.title) || question.includes("验收结果记录接口") && step.title.includes("验收结果记录接口")))
   const task = parent && scopedStep ? { ...parent, id: scopedStep.id, title: scopedStep.title, assigneeId: scopedStep.assigneeId,
-    remainingHours: scopedStep.status === "done" ? 0 : scopedStep.estimate, status: scopedStep.status, dependentIds: [] } : parent
+    remainingHours: remainingWork(scopedStep), status: scopedStep.status, dependentIds: [] } : parent
   if (scopedStep && !excludedMemberIds.includes(scopedStep.assigneeId) && /谁|哪(?:位|个)/.test(question)) {
     const owner = snapshot.members[scopedStep.assigneeId]
     if (owner) return { content: `这项「${scopedStep.title.split(/[:：]/)[0]}」已经由${owner.name}负责，约 ${scopedStep.estimate}h，继续由他推进最省交接成本。

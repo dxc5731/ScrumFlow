@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from "zustand/middleware"
 import { z } from "zod"
 import { addDays, differenceInCalendarDays, format, parseISO } from "date-fns"
 import { localProjectStorage } from "./localPersistence"
+import { eventConditionError, reconcileProjectEvents } from "../utils/eventLifecycle"
 import { calculatePlanSchedule } from "../agents/meetingSchedule"
 import { validatePlanAgainstConstraints } from "../agents/meetingConstraintValidator"
 import { revalidateReviewedProposal } from "../agents/meetingFinalRevalidation"
@@ -130,6 +131,8 @@ export interface BlankProjectInput {
 }
 
 export interface ProjectActions {
+  refreshProjectEvents: (now?: Date) => void
+  ignoreProjectEvent: (id: string) => void
   createMeeting: (targetType: "project" | "story" | "sprint", targetId: string) => MeetingSession
   addMeetingMessage: (meetingId: string, input: Pick<MeetingMessage, "senderType" | "senderId" | "content"> & Partial<Pick<MeetingMessage, "proposalId" | "evidence" | "rawEvidence" | "signal" | "artifactIds" | "handoffTo">>) => MeetingMessage
   endMeeting: (meetingId: string) => ActionResult
@@ -362,6 +365,7 @@ const dataKeys: (keyof ProjectDataState)[] = [
   "discussions",
   "history",
   "proposals",
+  "projectEvents",
   "meetingSessions",
   "meetingMessages",
   "workspace",
@@ -1760,7 +1764,13 @@ function normalizeProjectData(
     impactAnalyses: incoming.impactAnalyses ?? demo.impactAnalyses,
     sprintPulses: incoming.sprintPulses ?? demo.sprintPulses,
     discussions,
-    proposals: incoming.proposals ?? {},
+    proposals: Object.fromEntries(Object.entries(incoming.proposals ?? {}).map(([id, proposal]) => [id,
+      proposal.status === "applying" ? { ...proposal,
+        status: proposal.actions.some(action => action.status === "applied") ? "partially_applied" : "failed",
+        applyError: "上次执行被中断；请检查各项结果后重试，已成功动作不会重复执行。",
+      } : proposal,
+    ])),
+    projectEvents: incoming.projectEvents ?? {},
     meetingSessions: incoming.meetingSessions ?? {},
     meetingMessages: incoming.meetingMessages ?? {},
     workspace: {
@@ -1781,6 +1791,7 @@ function normalizeProjectData(
 }
 
 const initialDemoState = normalizeProjectData(createDemoProjectState())
+const executingProposals = new Set<string>()
 
 function createInitialProjectState() {
   return structuredClone(initialDemoState)
@@ -1801,6 +1812,11 @@ function proposalEntity(state: ProjectDataState, type: ProposalAction["targetTyp
 
 function staleReason(state: ProjectDataState, action: ProposalAction, appliedActions: ProposalAction[] = []): string | null {
   for (const condition of action.preconditions) {
+    if (condition.field === "eventBasis") {
+      const error = eventConditionError(state, condition)
+      if (error) return error
+      continue
+    }
     const entity = proposalEntity(state, condition.targetType, condition.targetId)
     if (!entity || typeof entity !== "object") return `${condition.targetType} ${condition.targetId} 已不存在`
     const current = condition.targetType === "story" && condition.field === "acceptanceCriteriaContents"
@@ -1811,7 +1827,13 @@ function staleReason(state: ProjectDataState, action: ProposalAction, appliedAct
         ? (entity as StoryEntity).taskIds.filter((id) => !appliedActions.some((applied) => applied.actionType === "CREATE_TASK" && applied.status === "applied" && applied.targetId === condition.targetId && applied.resultTargetId === id))
       : (entity as Record<string, unknown>)[condition.field]
     if (JSON.stringify(current) !== JSON.stringify(condition.expectedValue)) {
-      return `${condition.targetType} ${condition.targetId}.${condition.field} 已变化，请重新发起会议确认`
+      // 重试时目标字段可能已经达到该动作要求的值，不再次写入。
+      if (["UPDATE_TASK", "UPDATE_SUBTASK", "UPDATE_STORY", "UPDATE_RISK", "UPDATE_DEADLINE", "CHANGE_ASSIGNEE", "CHANGE_PRIORITY"].includes(action.actionType) &&
+        condition.targetType === action.targetType && condition.targetId === action.targetId && condition.field in action.proposedValue &&
+        JSON.stringify(current) === JSON.stringify(action.proposedValue[condition.field])) continue
+      if (condition.field === "openRiskIds" && existingProposalResult(state, action)) continue
+      if (action.actionType === "BLOCK_TASK" && condition.targetId === action.targetId && condition.field === "status" && existingProposalResult(state, action)) continue
+      return `${condition.targetType} ${condition.targetId}.${condition.field} 已变化，请重新分析确认`
     }
   }
   return null
@@ -1873,10 +1895,34 @@ function validateProposalValue(state: ProjectDataState, action: ProposalAction):
   }
   if ("startDate" in value && "endDate" in value && String(value.endDate) < String(value.startDate)) return "结束日期不能早于开始日期"
   if (action.actionType === "CREATE_RISK" && (value.targetType !== action.targetType || value.targetId !== action.targetId || !["story", "task", "sprint"].includes(String(value.targetType)))) return "风险目标无效"
+  if (action.actionType === "CREATE_DISCUSSION" && (typeof value.content !== "string" || !value.content.trim() ||
+    value.targetType !== undefined && value.targetType !== action.targetType || value.targetId !== undefined && value.targetId !== action.targetId)) return "讨论内容或目标无效"
+  if (action.actionType === "BLOCK_TASK" && (value.taskId !== action.targetId || !state.tasks[action.targetId])) return "阻塞目标无效"
   return null
 }
 
-function executeProposalAction(store: ProjectStore, action: ProposalAction, resolvedIds: Record<string, string>): { ok: boolean; message: string; id: string | null } {
+function existingProposalResult(state: ProjectDataState, action: ProposalAction, resolvedIds: Record<string, string> = {}): string | null {
+  const value = action.proposedValue
+  const matches = (entity: object, fields: string[]) => fields.every(field => !(field in value) || JSON.stringify((entity as Record<string, unknown>)[field]) === JSON.stringify(value[field]))
+  switch (action.actionType) {
+    case "CREATE_RISK": return Object.values(state.risks).find(risk => risk.status !== "resolved" && risk.targetType === value.targetType && risk.targetId === value.targetId && risk.title === value.title)?.id ?? null
+    case "CREATE_DISCUSSION": return Object.values(state.discussions).find(item => item.targetType === (value.targetType ?? action.targetType) && item.targetId === (value.targetId ?? action.targetId) && item.content === value.content)?.id ?? null
+    case "CREATE_TASK": return Object.values(state.tasks).find(task => task.storyId === action.targetId && matches(task, ["title", "type", "assigneeId", "estimate", "startDate", "endDate"]))?.id ?? null
+    case "CREATE_SUBTASK": return Object.values(state.subtasks).find(step => step.taskId === (resolvedIds[action.targetId] ?? action.targetId) && matches(step, ["title", "assigneeId", "estimate"]))?.id ?? null
+    case "ADD_DEPENDENCY": return Object.values(state.dependencies).find(dep => dep.sourceTaskId === (resolvedIds[String(value.sourceTaskId)] ?? value.sourceTaskId) && dep.targetTaskId === (resolvedIds[String(value.targetTaskId)] ?? value.targetTaskId))?.id ?? null
+    case "BLOCK_TASK": return state.tasks[action.targetId]?.blockReasons.some(reason => reason.message === value.message && reason.relatedTaskId === (value.relatedTaskId ?? null)) ? action.targetId : null
+    case "UPDATE_TASK": case "UPDATE_SUBTASK": case "UPDATE_STORY": case "UPDATE_RISK":
+    case "UPDATE_DEADLINE": case "CHANGE_ASSIGNEE": case "CHANGE_PRIORITY": {
+      const entity = proposalEntity(state, action.targetType, action.targetId)
+      return entity && matches(entity as object, Object.keys(value)) ? action.targetId : null
+    }
+    default: return null
+  }
+}
+
+function executeProposalAction(store: ProjectStore, action: ProposalAction, resolvedIds: Record<string, string>): { ok: boolean; message: string; id: string | null; existing?: boolean } {
+  const existing = existingProposalResult(store, action, resolvedIds)
+  if (existing) return { ok: true, message: "处理结果已存在，未重复写入", id: existing, existing: true }
   const value = action.proposedValue
   const patch = value as Record<string, never>
   switch (action.actionType) {
@@ -1921,7 +1967,8 @@ function executeProposalAction(store: ProjectStore, action: ProposalAction, reso
         targetId,
         typeof value.content === "string" && value.content ? value.content : action.reason,
       )
-      return { ...result, id: null }
+      const created = Object.values(useProjectStore.getState().discussions).find(item => item.targetType === targetType && item.targetId === targetId && item.content === value.content)
+      return { ...result, id: created?.id ?? null }
     }
     case "BLOCK_TASK": {
       const taskId = typeof value.taskId === "string" && value.taskId ? value.taskId : action.targetId
@@ -1976,6 +2023,16 @@ export const useProjectStore = create<ProjectStore>()(
   persist(
     (set, get) => ({
       ...createInitialProjectState(),
+
+      refreshProjectEvents: (now = new Date()) => {
+        const state = get()
+        const projectEvents = reconcileProjectEvents(state, now)
+        if (projectEvents !== state.projectEvents) set({ projectEvents })
+      },
+      ignoreProjectEvent: (id) => {
+        const record = get().projectEvents[id]
+        if (record) set(state => ({ projectEvents: { ...state.projectEvents, [id]: { ...record, status: "ignored", updatedAt: nowIso() } } }))
+      },
 
       createMeeting: (targetType, targetId) => {
         const state = get()
@@ -2146,8 +2203,10 @@ export const useProjectStore = create<ProjectStore>()(
       },
 
       applyProposal: (proposalId, note = "") => {
+        if (executingProposals.has(proposalId)) return { ok: false, message: "建议正在执行，请稍候" }
         const proposal = get().proposals[proposalId]
-        if (!proposal || !["draft", "reviewed"].includes(proposal.status)) return { ok: false, message: "Proposal 不可执行" }
+        if (proposal?.status === "applied") return { ok: true, message: "建议已处理，未重复写入" }
+        if (!proposal || !["draft", "reviewed", "failed", "partially_applied", "applying"].includes(proposal.status)) return { ok: false, message: "Proposal 不可执行" }
         if (proposal.projectId !== get().project.id) return { ok: false, message: "Proposal 不属于当前项目" }
         const owningMeeting = Object.values(get().meetingSessions).find((session) => session.proposalIds.includes(proposalId))
         if (proposal.constraintsSnapshot || proposal.agentType === "plan_execution" && owningMeeting) {
@@ -2161,16 +2220,23 @@ export const useProjectStore = create<ProjectStore>()(
             return { ok: false, message: `最终计划未通过校验：${finalReview.errors.join("；")}` }
           }
         }
-        const accepted = proposal.actions.filter((action) => action.decision === "accepted")
+        const accepted = proposal.actions.filter((action) => action.decision === "accepted" && action.status !== "applied")
         if (!accepted.length) return { ok: false, message: "请先采纳至少一条 Action" }
+        // 先检查所有待执行动作，再按已有依赖顺序逐项执行；每项写回前再次检查。
+        const preflight = new Map(accepted.map(action => [action.id, {
+          stale: action.status === "stale" ? action.error ?? "建议已失效，请重新分析" : staleReason(get(), action, proposal.actions),
+          invalid: validateProposalValue(get(), action),
+        }]))
         const started: AgentProposal = {
           ...proposal, status: "applying", reviewedBy: get().workspace.currentUserId,
           reviewedAt: proposal.reviewedAt ?? nowIso(), reviewNote: note,
           updatedAt: nowIso(),
         }
+        executingProposals.add(proposalId)
+        try {
         set((state) => ({ proposals: { ...state.proposals, [proposalId]: started } }))
         const results = structuredClone(started.actions)
-        const pending = results.filter((item) => item.decision === "accepted")
+        const pending = results.filter((item) => item.decision === "accepted" && item.status !== "applied")
         while (pending.length) {
           const readyIndex = pending.findIndex((item) => item.dependsOnActionIds.every((id) => !pending.some((candidate) => candidate.id === id)))
           if (readyIndex < 0) {
@@ -2186,16 +2252,16 @@ export const useProjectStore = create<ProjectStore>()(
           const [item] = pending.splice(readyIndex, 1)
           const dependencies = item.dependsOnActionIds.map((id) => results.find((candidate) => candidate.id === id))
           const failedDependency = dependencies.find((candidate) => !candidate || candidate.status !== "applied")
-          if (failedDependency) {
+          if (dependencies.some(candidate => !candidate || candidate.status !== "applied")) {
             item.status = "failed"
-            item.error = `依赖 Action ${failedDependency?.id ?? "不存在"} 未成功执行`
+              item.error = `已跳过：依赖 Action ${failedDependency?.id ?? "不存在"} 未成功执行`
           } else {
-            const stale = staleReason(get(), item, results)
+            const stale = preflight.get(item.id)?.stale ?? staleReason(get(), item, results)
             if (stale) {
               item.status = "stale"
               item.error = stale
             } else {
-              const invalid = validateProposalValue(get(), item)
+              const invalid = preflight.get(item.id)?.invalid ?? validateProposalValue(get(), item)
               if (invalid) {
                 item.status = "failed"
                 item.error = invalid
@@ -2206,7 +2272,8 @@ export const useProjectStore = create<ProjectStore>()(
                   const result = executeProposalAction(get(), item, resolvedIds)
                   item.resultTargetId = result.id
                   const changed = get().history.some((entry) => !beforeIds.has(entry.id))
-                  item.status = result.ok && changed ? "applied" : "failed"
+                  item.status = result.ok && (changed || result.existing) ? "applied" : "failed"
+                  item.executionOutcome = item.status === "applied" ? result.existing ? "existing" : "written" : undefined
                   item.error = item.status === "failed" ? (result.ok ? "Store Action 未产生实际变更" : result.message) : null
                   if (item.status === "applied") item.appliedAt = nowIso()
                 } catch (error) {
@@ -2229,13 +2296,15 @@ export const useProjectStore = create<ProjectStore>()(
           ? failures.length ? "partially_applied" : "applied"
           : "failed"
          set((state) => ({ proposals: { ...state.proposals, [proposalId]: {
-           ...state.proposals[proposalId], actions: results, status,
+           ...state.proposals[proposalId], actions: results, reviewedActions: structuredClone(results), status,
            appliedAt: succeeded ? nowIso() : null, updatedAt: nowIso(),
            applyError: failures.length ? failures.map((item) => `${item.id}: ${item.error}`).join("；") : null,
          } } }))
          set((state) => ({ meetingSessions: refreshedEndedMeetingMinutes(state, proposalId) }))
         const rejected = results.filter((item) => item.decision === "rejected").length
-        return { ok: status === "applied", message: status === "applied" ? `计划已应用：${succeeded} 项变更执行成功${rejected ? `，${rejected} 项建议按你的决定未执行` : ""}` : status === "partially_applied" ? "部分建议已应用，请查看失败或过期项" : "建议未能应用，请查看原因" }
+        const existing = results.filter(item => item.executionOutcome === "existing").length
+        return { ok: status === "applied", message: status === "applied" ? `计划已应用：${succeeded - existing} 项实际变更${existing ? `，${existing} 项复用已有结果` : ""}${rejected ? `，${rejected} 项建议按你的决定未执行` : ""}` : status === "partially_applied" ? "部分建议已应用，请查看失败或过期项" : "建议未能应用，请查看原因" }
+        } finally { executingProposals.delete(proposalId) }
       },
 
       createProposal: (input) => {
@@ -2381,6 +2450,7 @@ export const useProjectStore = create<ProjectStore>()(
           discussions: {},
           history: [historyItem("project", projectId, "create", null, project, "ui")],
           proposals: {},
+          projectEvents: {},
           meetingSessions: {},
           meetingMessages: {},
           workspace,

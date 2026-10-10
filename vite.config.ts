@@ -68,7 +68,14 @@ async function writeAtomically(filePath: string, content: string | Buffer) {
   const temporaryPath = `${filePath}.${randomUUID()}.tmp`
   try {
     await writeFile(temporaryPath, content)
-    await rename(temporaryPath, filePath)
+    // Windows 的索引/杀毒程序可能短暂占用目标文件；保留原子替换并有限重试。
+    for (let attempt = 0; ; attempt++) {
+      try { await rename(temporaryPath, filePath); break }
+      catch (error) {
+        if (attempt >= 3 || !['EPERM', 'EBUSY', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+        await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)))
+      }
+    }
   } catch (error) {
     await rm(temporaryPath, { force: true }).catch(() => undefined)
     throw error

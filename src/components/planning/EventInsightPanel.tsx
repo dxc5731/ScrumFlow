@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   AlertTriangle,
   CircleAlert,
@@ -15,7 +15,7 @@ import {
   type EventKind,
 } from "../../utils/eventDetection"
 import { explainEvent, type EventExplanation } from "../../utils/eventExplanation"
-import type { AgentProposal, ProposalEvidence } from "../../types"
+import type { ProposalEvidence } from "../../types"
 import { selectStoryTasks } from "../../store/selectors"
 import { proposalStatusLabel } from "../../store/selectors"
 import {
@@ -24,6 +24,7 @@ import {
 } from "../../store/projectStore"
 import type { AgentType } from "../../types"
 import { notify } from "./ui"
+import { eventCondition, matchesEventProposal } from "../../utils/eventLifecycle"
 
 type InsightTarget =
   | { type: "task"; id: string }
@@ -48,13 +49,6 @@ const severityMeta: Record<DetectedEvent["severity"], { label: string; color: st
   low: { label: "低", color: "#067647" },
 }
 
-function matchesEventProposal(proposal: AgentProposal, event: DetectedEvent) {
-  if (proposal.origin !== "event" || proposal.summary !== event.title) return false
-  // 兼容合并版本把 Sprint / Story 面板 ID 保存为提案目标的旧数据。
-  return proposal.targetType === event.targetType && proposal.targetId === event.targetId ||
-    proposal.evidence.some((item) => item.targetType === event.targetType && item.targetId === event.targetId)
-}
-
 /** 检测事件的字符串证据转成契约规定的结构化证据。 */
 function toProposalEvidence(event: DetectedEvent, agent: AgentType): ProposalEvidence[] {
   return [...event.evidence, `触发规则：${event.rule}`].map((detail) => ({
@@ -69,6 +63,7 @@ function toProposalEvidence(event: DetectedEvent, agent: AgentType): ProposalEvi
 function buildAction(event: DetectedEvent): ProposalActionInput {
   const state = useProjectStore.getState()
   const task = state.tasks[event.targetId]
+  const sprintId = event.sprintId ?? state.workspace.selectedSprintId
 
   if (event.kind === "dependency" && task) {
     return {
@@ -80,7 +75,7 @@ function buildAction(event: DetectedEvent): ProposalActionInput {
       proposedValue: {
         taskId: task.id,
         message: event.summary,
-        relatedTaskId: event.relatedIds[0] ?? null,
+        relatedTaskId: event.relatedIds.find(id => state.tasks[id]) ?? null,
       },
       preconditions: [
         { targetType: "task", targetId: task.id, field: "status", expectedValue: task.status },
@@ -151,12 +146,12 @@ function buildAction(event: DetectedEvent): ProposalActionInput {
   return {
     actionType: "CREATE_RISK",
     targetType: "sprint",
-    targetId: state.workspace.selectedSprintId,
+    targetId: sprintId,
     reason: event.suggestedAction,
     proposedValue: {
       title: event.title,
       targetType: "sprint",
-      targetId: state.workspace.selectedSprintId,
+      targetId: sprintId,
       level: event.severity === "high" ? "high" : "medium",
       description: event.summary,
       impact: event.suggestedAction,
@@ -165,9 +160,15 @@ function buildAction(event: DetectedEvent): ProposalActionInput {
       status: "open",
     },
     preconditions: [
-      { targetType: "sprint", targetId: state.workspace.selectedSprintId, field: "status", expectedValue: state.sprints[state.workspace.selectedSprintId]?.status },
+      { targetType: "sprint", targetId: sprintId, field: "status", expectedValue: state.sprints[sprintId]?.status },
     ],
   }
+}
+
+export function buildEventAction(event: DetectedEvent): ProposalActionInput {
+  const state = useProjectStore.getState()
+  const action = buildAction(event)
+  return { ...action, preconditions: [...(action.preconditions ?? []), eventCondition(state, event, event.sprintId ?? state.workspace.selectedSprintId)] }
 }
 
 function relatedTaskIds(
@@ -197,16 +198,37 @@ export default function EventInsightPanel({
   const setDecision = useProjectStore((state) => state.setProposalActionDecision)
   const applyProposal = useProjectStore((state) => state.applyProposal)
   const rejectProposal = useProjectStore((state) => state.rejectProposal)
+  const records = useProjectStore(state => state.projectEvents)
+  const stories = useProjectStore(state => state.stories)
+  const tasks = useProjectStore(state => state.tasks)
+  const selectedSprintId = useProjectStore(state => state.workspace.selectedSprintId)
+  const sprintId = target.type === "sprint" ? target.id : target.type === "story" ? stories[target.id]?.sprintId ?? selectedSprintId
+    : stories[tasks[target.id]?.storyId]?.sprintId ?? selectedSprintId
 
   const [events, setEvents] = useState<DetectedEvent[] | null>(null)
   const [proposalIdByEvent, setProposalIdByEvent] = useState<Record<string, string>>({})
   const [explanations, setExplanations] = useState<Record<string, EventExplanation>>({})
   const [explaining, setExplaining] = useState<Record<string, boolean>>({})
   const [modelStatus, setModelStatus] = useState<"idle" | "ok" | "unavailable">("idle")
+  const [hasScanned, setHasScanned] = useState(false)
+
+  useEffect(() => {
+    const snapshot = useProjectStore.getState()
+    const taskIds = relatedTaskIds(snapshot, target)
+    const scoped = Object.values(records).filter(record => record.sprintId === sprintId && (target.type === "sprint" ||
+      record.event.kind !== "scope" && (record.event.targetId === target.id || taskIds.has(record.event.targetId) ||
+        record.event.relatedIds.some(id => id === target.id || taskIds.has(id)))))
+    if (scoped.length || hasScanned) {
+      setEvents(scoped.map(record => record.event))
+      setProposalIdByEvent(Object.fromEntries(scoped.filter(record => record.proposalId).map(record => [record.event.id, record.proposalId!])))
+    }
+  }, [records, sprintId, target.type, target.id, hasScanned])
 
   const runScan = () => {
     const snapshot = useProjectStore.getState()
-    const all = detectProjectEvents(snapshot, snapshot.workspace.selectedSprintId, new Date())
+    snapshot.refreshProjectEvents()
+    setHasScanned(true)
+    const all = detectProjectEvents(snapshot, sprintId, new Date())
     let scoped = all
     if (target.type === "task") {
       scoped = all.filter(
@@ -230,7 +252,7 @@ export default function EventInsightPanel({
     const linked: Record<string, string> = {}
     scoped.forEach((event) => {
       const match = existing.find(
-        (proposal) => matchesEventProposal(proposal, event),
+        (proposal) => matchesEventProposal(proposal, event, snapshot),
       )
       if (match) linked[event.id] = match.id
     })
@@ -261,7 +283,7 @@ export default function EventInsightPanel({
   const createFromEvent = (event: DetectedEvent) => {
     const existing = Object.values(useProjectStore.getState().proposals).find(
       (proposal) =>
-        matchesEventProposal(proposal, event) &&
+        matchesEventProposal(proposal, event, useProjectStore.getState()) &&
         proposal.status !== "rejected",
     )
     if (existing) {
@@ -278,9 +300,10 @@ export default function EventInsightPanel({
       summary: event.title,
       reasoning: event.summary,
       evidence: toProposalEvidence(event, kindMeta[event.kind].agent),
-      actions: [buildAction(event)],
+      actions: [buildEventAction(event)],
     })
     setProposalIdByEvent((current) => ({ ...current, [event.id]: proposal.id }))
+    useProjectStore.getState().refreshProjectEvents()
     notify("已生成待确认建议", "info")
   }
 
@@ -293,7 +316,7 @@ export default function EventInsightPanel({
         </div>
         <button className="secondary-button" onClick={runScan}>
           <RefreshCw size={11} />
-          {events === null ? "分析" : "重新分析"}
+          {hasScanned ? "重新分析" : "分析"}
         </button>
       </div>
 
@@ -315,6 +338,8 @@ export default function EventInsightPanel({
           const Icon = meta.icon
           const proposalId = proposalIdByEvent[event.id]
           const proposal = proposalId ? proposals[proposalId] : undefined
+          const record = records[`${sprintId}:${event.id}`]
+          const inactive = record?.status === "resolved" || record?.status === "ignored"
 
           return (
             <div key={event.id} className="rounded-lg border border-[#E2E7EE] bg-white p-3">
@@ -328,6 +353,7 @@ export default function EventInsightPanel({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] font-semibold text-[#172033]">{event.title}</span>
+                    {record && <span className="text-[9px] text-[#667085]">{{ new: "新发现", pending: "待处理", suggested: "已生成建议 · 问题未解决", resolved: "已解决", ignored: "已忽略" }[record.status]}</span>}
                     <span
                       className="rounded px-1.5 py-0.5 text-[9px] font-semibold"
                       style={{ color: severityMeta[event.severity].color, background: "#F9FAFB" }}
@@ -336,6 +362,7 @@ export default function EventInsightPanel({
                     </span>
                   </div>
                   <p className="mt-1 text-[10px] leading-5 text-[#475467]">{event.summary}</p>
+                  {record?.status === "resolved" && <p className="text-[9px] text-[#667085]">以下为最后一次发现时的依据；当前检测条件已消失。</p>}
                   {!compact && (
                     <ul className="mt-1.5 space-y-0.5">
                       {event.evidence.map((item) => (
@@ -367,11 +394,12 @@ export default function EventInsightPanel({
                 </div>
               </div>
 
-              {!proposal && (
+              {!proposal && !inactive && (
                 <div className="mt-2">
                   <button className="primary-button" onClick={() => { void requestExplanation(event); createFromEvent(event) }}>
                     生成建议
                   </button>
+                  <button className="secondary-button ml-2" onClick={() => useProjectStore.getState().ignoreProjectEvent(`${sprintId}:${event.id}`)}>忽略事件</button>
                 </div>
               )}
 
@@ -414,7 +442,7 @@ export default function EventInsightPanel({
                             className="mt-0.5 text-[9px]"
                             style={{ color: action.status === "applied" ? "#067647" : "#B42318" }}
                           >
-                            {action.status}
+                            {action.executionOutcome === "existing" ? "复用已有结果，未重复写入" : action.status}
                             {action.error ? ` · ${action.error}` : ""}
                           </div>
                         )}
@@ -436,6 +464,7 @@ export default function EventInsightPanel({
                         className="secondary-button"
                         onClick={() => {
                           rejectProposal(proposal.id, "在事件面板中忽略")
+                          useProjectStore.getState().ignoreProjectEvent(`${sprintId}:${event.id}`)
                           notify("建议已忽略", "info")
                         }}
                       >

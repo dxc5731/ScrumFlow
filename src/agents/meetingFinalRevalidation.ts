@@ -5,6 +5,7 @@ import { buildProjectAnalysisSnapshotForScope } from "./meetingSnapshot"
 import { projectPlanCapacity } from "./meetingCapacity"
 import { validateProjectDependencyGraph } from "./projectDependencyGraph"
 import { projectReviewedActions } from './meetingReviewProjection'
+import { eventConditionError } from "../utils/eventLifecycle"
 import type { AgentProposal, MeetingPlanTask, MeetingSession, ProjectDataState, ProposalAction } from "../types"
 
 export interface FinalPlanValidationResult {
@@ -29,7 +30,10 @@ function currentValue(state: ProjectDataState, type: ProposalAction["targetType"
     : type === "task" ? state.tasks[id]
       : type === "subtask" ? state.subtasks[id]
         : type === "sprint" ? state.sprints[id]
-          : type === "risk" ? state.risks[id] : null
+          : type === "risk" ? state.risks[id]
+            : type === "member" ? state.members[id]
+              : type === "dependency" ? state.dependencies[id]
+                : type === "project" && state.project.id === id ? state.project : null
   if (!entity) return undefined
   if (type === "story" && field === "acceptanceCriteriaContents")
     return state.stories[id].acceptanceCriteriaIds.map((key) => state.acceptanceCriteria[key]?.content ?? null)
@@ -50,11 +54,11 @@ export function revalidateReviewedProposal(
   const pending = proposal.actions.filter((action) => action.decision === "pending" && action.status === "pending")
   if (pending.length) errors.push(`还有 ${pending.length} 项建议尚未审核`)
   if (!accepted.length) errors.push("请先采纳至少一项项目变更")
-  const acceptedIds = new Set(accepted.map((action) => action.id))
+  const acceptedIds = new Set(proposal.actions.filter(action => action.decision === "accepted" && (action.status === "pending" || action.status === "applied")).map(action => action.id))
   for (const action of accepted) {
     for (const id of action.dependsOnActionIds) if (!acceptedIds.has(id))
       errors.push(`「${String(action.proposedValue.title ?? "依赖关系")}」所需的前置变更未被采纳`)
-    for (const condition of action.preconditions) if (!equal(currentValue(state, condition.targetType, condition.targetId, condition.field), condition.expectedValue))
+    for (const condition of action.preconditions) if (condition.field === "eventBasis" ? eventConditionError(state, condition) : !equal(currentValue(state, condition.targetType, condition.targetId, condition.field), condition.expectedValue))
       errors.push(`「${String(action.proposedValue.title ?? action.targetId)}」对应的项目数据已变化，请重新生成建议`)
     if (["UPDATE_TASK", "UPDATE_SUBTASK"].includes(action.actionType)) {
       const existing = action.actionType === "UPDATE_TASK" ? state.tasks[action.targetId] : state.subtasks[action.targetId]

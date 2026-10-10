@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { runPlanningMeeting } from "../agents/meeting"
 import { resetProjectStoreForTests, useProjectStore } from "../store/projectStore"
 import { selectStoryTasks, selectTaskSubtasks } from "../store/selectors"
@@ -23,6 +23,7 @@ function acceptAll(proposalId: string) {
 
 describe("planning meeting proposal lifecycle", () => {
   beforeEach(() => resetProjectStoreForTests())
+  afterEach(() => vi.useRealTimers())
 
   it("generates structured Task/Subtask suggestions and applies them through the project model", () => {
     const { storyId, proposalId, meeting } = prepareStory()
@@ -162,6 +163,8 @@ describe("planning meeting proposal lifecycle", () => {
   })
 
   it("uses the Sprint date range to suggest a capacity based reassignment", () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-10-01T10:00:00+08:00"))
     const store = useProjectStore.getState()
     const sprint = store.createSprint({ name: "短 Sprint", goal: "交付两项任务", startDate: "2026-10-01", endDate: "2026-10-02", capacity: 8 })
     const story = store.createStory({ title: "成员负载 Story", source: "manual", sprintId: sprint.id, startDate: sprint.startDate, dueDate: sprint.endDate })
