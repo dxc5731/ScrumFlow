@@ -15,6 +15,7 @@ import {
   type EventKind,
 } from "../../utils/eventDetection"
 import { explainEvent, type EventExplanation } from "../../utils/eventExplanation"
+import type { ProposalEvidence } from "../../types"
 import { selectStoryTasks } from "../../store/selectors"
 import { proposalStatusLabel } from "../../store/selectors"
 import {
@@ -47,6 +48,16 @@ const severityMeta: Record<DetectedEvent["severity"], { label: string; color: st
   low: { label: "低", color: "#067647" },
 }
 
+/** 检测事件的字符串证据转成契约规定的结构化证据。 */
+function toProposalEvidence(event: DetectedEvent, agent: AgentType): ProposalEvidence[] {
+  return [...event.evidence, `触发规则：${event.rule}`].map((detail) => ({
+    agentType: agent,
+    targetType: event.targetType,
+    targetId: event.targetId,
+    detail,
+  }))
+}
+
 /** 把一条检测事件翻译成一条可审批的 ProposalAction。 */
 function buildAction(event: DetectedEvent): ProposalActionInput {
   const state = useProjectStore.getState()
@@ -65,7 +76,7 @@ function buildAction(event: DetectedEvent): ProposalActionInput {
         relatedTaskId: event.relatedIds[0] ?? null,
       },
       preconditions: [
-        { targetType: "task", targetId: task.id, field: "status", expected: task.status },
+        { targetType: "task", targetId: task.id, field: "status", expectedValue: task.status },
       ],
     }
   }
@@ -86,9 +97,10 @@ function buildAction(event: DetectedEvent): ProposalActionInput {
         impact: event.suggestedAction,
         mitigation: "由负责人确认剩余工作并更新排期。",
         ownerId: task.assigneeId,
+        status: "open",
       },
       preconditions: [
-        { targetType: "task", targetId: task.id, field: "status", expected: task.status },
+        { targetType: "task", targetId: task.id, field: "status", expectedValue: task.status },
       ],
     }
   }
@@ -106,7 +118,7 @@ function buildAction(event: DetectedEvent): ProposalActionInput {
         content: `【AI 提醒】${event.summary}${event.suggestedAction}`,
       },
       preconditions: [
-        { targetType: "task", targetId: task.id, field: "status", expected: task.status },
+        { targetType: "task", targetId: task.id, field: "status", expectedValue: task.status },
       ],
     }
   }
@@ -124,7 +136,7 @@ function buildAction(event: DetectedEvent): ProposalActionInput {
         content: `【AI 提醒】${event.summary}${event.suggestedAction}`,
       },
       preconditions: story
-        ? [{ targetType: "story", targetId: story.id, field: "maturityStatus", expected: story.maturityStatus }]
+        ? [{ targetType: "story", targetId: story.id, field: "maturityStatus", expectedValue: story.maturityStatus }]
         : [],
     }
   }
@@ -143,7 +155,11 @@ function buildAction(event: DetectedEvent): ProposalActionInput {
       impact: event.suggestedAction,
       mitigation: "评估转派、拆分任务或调整本轮 Sprint 范围。",
       ownerId: state.workspace.currentUserId,
+      status: "open",
     },
+    preconditions: [
+      { targetType: "sprint", targetId: state.workspace.selectedSprintId, field: "status", expectedValue: state.sprints[state.workspace.selectedSprintId]?.status },
+    ],
   }
 }
 
@@ -262,7 +278,7 @@ export default function EventInsightPanel({
       targetId: target.id,
       summary: event.title,
       reasoning: event.summary,
-      evidence: [...event.evidence, `触发规则：${event.rule}`],
+      evidence: toProposalEvidence(event, kindMeta[event.kind].agent),
       actions: [buildAction(event)],
     })
     setProposalIdByEvent((current) => ({ ...current, [event.id]: proposal.id }))
@@ -411,7 +427,7 @@ export default function EventInsightPanel({
                       <button
                         className="primary-button"
                         onClick={() => {
-                          const result = applyProposal(proposal.id, useProjectStore.getState().workspace.currentUserId)
+                          const result = applyProposal(proposal.id)
                           notify(result.message, result.ok ? "success" : "error")
                         }}
                       >
@@ -420,11 +436,7 @@ export default function EventInsightPanel({
                       <button
                         className="secondary-button"
                         onClick={() => {
-                          rejectProposal(
-                            proposal.id,
-                            "在事件面板中忽略",
-                            useProjectStore.getState().workspace.currentUserId,
-                          )
+                          rejectProposal(proposal.id, "在事件面板中忽略")
                           notify("建议已忽略", "info")
                         }}
                       >

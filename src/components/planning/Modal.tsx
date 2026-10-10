@@ -37,13 +37,13 @@ export default function Modal({
               </p>
             )}
           </div>
-          <button className="icon-button" onClick={onClose} title="关闭">
-            <X size={15} />
+          <button type="button" className="icon-button dialog-close-button" onClick={onClose} title="关闭" aria-label="关闭">
+            <X size={24} />
           </button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
         {footer && (
-          <footer className="flex items-center justify-end gap-2 border-t border-[#EAECF0] bg-[#FCFCFD] px-5 py-3">
+          <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-[#EAECF0] bg-[#FCFCFD] px-5 py-3">
             {footer}
           </footer>
         )}

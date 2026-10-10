@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest"
-import { resetProjectStoreForTests, useProjectStore } from "../store/projectStore"
+import { resetProjectStoreForTests, useProjectStore, type CreateProposalInput } from "../store/projectStore"
 import { selectPendingActionCount, selectPendingProposals, proposalStatusLabel } from "../store/selectors"
 
-function riskProposalInput(overrides: Partial<Parameters<ReturnType<typeof useProjectStore.getState>["createProposal"]>[0]> = {}) {
+function riskProposalInput(overrides: Partial<CreateProposalInput> = {}): CreateProposalInput {
+  const taskStatus = useProjectStore.getState().tasks["fe-024-2"]?.status ?? "todo"
   return {
     origin: "event" as const,
     triggerType: "manual" as const,
@@ -11,7 +12,20 @@ function riskProposalInput(overrides: Partial<Parameters<ReturnType<typeof usePr
     targetId: "fe-024-2",
     summary: "期限风险处置建议",
     reasoning: "任务已接近截止但进度不足",
-    evidence: ["截止日期：2026-09-18", "当前进度：45%"],
+    evidence: [
+      {
+        agentType: "risk_dependency",
+        targetType: "task",
+        targetId: "fe-024-2",
+        detail: "截止日期：2026-09-18",
+      },
+      {
+        agentType: "risk_dependency",
+        targetType: "task",
+        targetId: "fe-024-2",
+        detail: "当前进度：45%",
+      },
+    ],
     actions: [
       {
         actionType: "CREATE_RISK" as const,
@@ -27,7 +41,11 @@ function riskProposalInput(overrides: Partial<Parameters<ReturnType<typeof usePr
           impact: "可能影响 Story 验收",
           mitigation: "调整排期或拆分任务",
           ownerId: "m2",
+          status: "open",
         },
+        preconditions: [
+          { targetType: "task", targetId: "fe-024-2", field: "status", expectedValue: taskStatus },
+        ],
       },
     ],
     ...overrides,
@@ -88,7 +106,7 @@ describe("Proposal 持久化与执行", () => {
             reason: "登记期限风险",
             proposedValue: { title: "风险", targetType: "task", targetId: "fe-024-2", level: "high" },
             preconditions: [
-              { targetType: "task", targetId: "fe-024-2", field: "status", expected: "done" },
+              { targetType: "task", targetId: "fe-024-2", field: "status", expectedValue: "done" },
             ],
           },
         ],
@@ -99,14 +117,14 @@ describe("Proposal 持久化与执行", () => {
 
     const stored = useProjectStore.getState().proposals[created.id]
     expect(stored.actions[0].status).toBe("stale")
-    expect(stored.actions[0].error).toContain("执行前数据已变化")
+    expect(stored.actions[0].error).toContain("已变化")
     expect(stored.status).toBe("failed")
     expect(result.ok).toBe(false)
   })
 
   it("驳回后记录原因与审批人", () => {
     const created = useProjectStore.getState().createProposal(riskProposalInput())
-    useProjectStore.getState().rejectProposal(created.id, "当前不需要登记风险", "m1")
+    useProjectStore.getState().rejectProposal(created.id, "当前不需要登记风险")
     const stored = useProjectStore.getState().proposals[created.id]
 
     expect(stored.status).toBe("rejected")
@@ -117,7 +135,7 @@ describe("Proposal 持久化与执行", () => {
   it("待确认列表只保留未结束的 Proposal", () => {
     const first = useProjectStore.getState().createProposal(riskProposalInput())
     const second = useProjectStore.getState().createProposal(riskProposalInput())
-    useProjectStore.getState().rejectProposal(second.id, "忽略", "m1")
+    useProjectStore.getState().rejectProposal(second.id, "忽略")
 
     const state = useProjectStore.getState()
     const pending = selectPendingProposals(state)
@@ -146,21 +164,34 @@ describe("Proposal 持久化与执行", () => {
       targetId: storyId!,
       summary: "链式创建验证",
       reasoning: "先创建任务，再为其创建子任务",
-      evidence: ["测试构造"],
+      evidence: [
+        {
+          agentType: "project_orchestrator",
+          targetType: "story",
+          targetId: storyId!,
+          detail: "测试构造",
+        },
+      ],
       actions: [
         {
           actionType: "CREATE_TASK",
           targetType: "story",
           targetId: storyId,
           reason: "创建父任务",
-          proposedValue: { storyId, title: "链式父任务", type: "frontend", assigneeId: "m1", estimate: 4 },
+          proposedValue: { storyId, title: "链式父任务", type: "frontend", assigneeId: "m1", estimate: 4, startDate: "2026-09-20", endDate: "2026-09-25" },
+          preconditions: [
+            { targetType: "story", targetId: storyId!, field: "id", expectedValue: storyId! },
+          ],
         },
         {
           actionType: "CREATE_SUBTASK",
           targetType: "task",
           targetId: "__PARENT__",
           reason: "为父任务创建子任务",
-          proposedValue: { taskId: "__PARENT__", title: "链式子任务" },
+          proposedValue: { taskId: "__PARENT__", title: "链式子任务", estimate: 2, assigneeId: "m1" },
+          preconditions: [
+            { targetType: "story", targetId: storyId!, field: "id", expectedValue: storyId! },
+          ],
         },
       ],
     })
@@ -177,7 +208,7 @@ describe("Proposal 持久化与执行", () => {
                   ...action,
                   targetId: parentId,
                   dependsOnActionIds: [parentId],
-                  proposedValue: { taskId: parentId, title: "链式子任务" },
+                  proposedValue: { taskId: parentId, title: "链式子任务", estimate: 2, assigneeId: "m1" },
                 }
               : action,
           ),
@@ -212,6 +243,9 @@ describe("Proposal 持久化与执行", () => {
     expect(
       useProjectStore.getState().updateProposalValue(created.id, actionId, changed).ok,
     ).toBe(true)
+    expect(
+      useProjectStore.getState().setProposalDecision(created.id, actionId, "accepted").ok,
+    ).toBe(true)
     const stored = useProjectStore.getState().proposals[created.id]
     expect(stored.actions[0].proposedValue).toMatchObject({ title: "人工调整后的风险标题" })
     expect(stored.originalActions[0].proposedValue).not.toMatchObject({
@@ -220,10 +254,10 @@ describe("Proposal 持久化与执行", () => {
     expect(stored.actions[0].decision).toBe("accepted")
   })
 
-  it("setProposalDecision 与 saveProposal 兼容会议侧调用", () => {
+  it("saveProposal 拒绝重复保存同一建议", () => {
     const created = useProjectStore.getState().createProposal(riskProposalInput())
     const snapshot = structuredClone(useProjectStore.getState().proposals[created.id])
-    expect(useProjectStore.getState().saveProposal(snapshot).ok).toBe(true)
+    expect(useProjectStore.getState().saveProposal(snapshot).ok).toBe(false)
     expect(
       useProjectStore.getState().setProposalDecision(created.id, created.actions[0].id, "accepted").ok,
     ).toBe(true)

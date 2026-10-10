@@ -3,6 +3,9 @@ import { createJSONStorage, persist } from "zustand/middleware"
 import { z } from "zod"
 import { addDays, differenceInCalendarDays, format, parseISO } from "date-fns"
 import { localProjectStorage } from "./localPersistence"
+import { calculatePlanSchedule } from "../agents/meetingSchedule"
+import { validatePlanAgainstConstraints } from "../agents/meetingConstraintValidator"
+import { revalidateReviewedProposal } from "../agents/meetingFinalRevalidation"
 import {
   CURRENT_SCHEMA_VERSION,
   createDemoProjectState,
@@ -11,7 +14,6 @@ import type {
   AcceptanceCriterion,
   AcceptanceRecord,
   AgentProposal,
-  AgentProposalStatus,
   AgentType,
   AssetLinkTargetType,
   BlockReasonEntity,
@@ -23,10 +25,15 @@ import type {
   ImpactAnalysisEntity,
   InspectorTab,
   Member,
+  MeetingMessage,
+  MeetingMemory,
+  MeetingQaTrace,
+  MeetingSession,
   ProjectDataState,
   ProposalAction,
   ProposalActionDecision,
   ProposalActionType,
+  ProposalEvidence,
   ProposalOrigin,
   ProposalPrecondition,
   ProposalTargetType,
@@ -43,6 +50,18 @@ import type {
   UserTaskEntity,
   WorkspaceState,
 } from "../types"
+import { createMeetingMemory } from "../agents/meetingContext"
+import { buildProjectAnalysisSnapshot } from "../agents/meetingSnapshot"
+import { synchronizeWorkingState } from '../agents/meetingWorkingState'
+import { generateMeetingMinutes, meetingFactFromMessage, recordMeetingTopic, topicFromMeetingFact } from "../agents/meetingMinutes"
+
+function refreshedEndedMeetingMinutes(state: ProjectDataState, proposalId: string) {
+  const sessions = Object.values(state.meetingSessions).filter((session) => session.status === "ended" && session.proposalIds.includes(proposalId))
+  if (!sessions.length) return state.meetingSessions
+  return { ...state.meetingSessions, ...Object.fromEntries(sessions.map((session) => [session.id, {
+    ...session, minutes: generateMeetingMinutes(state, session),
+  }])) }
+}
 
 type ChangeSource = ChangeHistoryItem["source"]
 
@@ -101,32 +120,6 @@ export interface ResultSubmission {
   assetIds: string[]
 }
 
-export interface ProposalActionInput {
-  actionType: ProposalActionType
-  targetType: ProposalTargetType
-  targetId: string | null
-  proposedValue: unknown
-  reason: string
-  beforeValue?: unknown
-  preconditions?: ProposalPrecondition[]
-  dependsOnActionIds?: string[]
-}
-
-export interface CreateProposalInput {
-  origin: ProposalOrigin
-  triggerType: ProposalTriggerType
-  agentType: AgentType
-  targetType: ProposalTargetType
-  targetId: string
-  summary: string
-  reasoning: string
-  evidence: string[]
-  actions: ProposalActionInput[]
-}
-
-export const PROPOSAL_SCHEMA_VERSION = 1
-const PROPOSAL_LIMIT = 200
-
 export interface BlankProjectInput {
   name: string
   goal: string
@@ -137,6 +130,26 @@ export interface BlankProjectInput {
 }
 
 export interface ProjectActions {
+  createMeeting: (targetType: "project" | "story" | "sprint", targetId: string) => MeetingSession
+  addMeetingMessage: (meetingId: string, input: Pick<MeetingMessage, "senderType" | "senderId" | "content"> & Partial<Pick<MeetingMessage, "proposalId" | "evidence" | "rawEvidence" | "signal" | "artifactIds" | "handoffTo">>) => MeetingMessage
+  endMeeting: (meetingId: string) => ActionResult
+  setMeetingPresentation: (meetingId: string, patch: Pick<MeetingSession, "narrative" | "presentationMode">) => void
+  linkMeetingProposal: (meetingId: string, proposalId: string) => ActionResult
+  setMeetingMemory: (meetingId: string, memory: MeetingMemory) => ActionResult
+  recordMeetingQaTrace: (meetingId: string, trace: MeetingQaTrace) => ActionResult
+  saveProposal: (proposal: AgentProposal) => ActionResult
+  setProposalDecision: (proposalId: string, actionId: string, decision: ProposalAction["decision"]) => ActionResult
+  updateProposalValue: (proposalId: string, actionId: string, value: Record<string, unknown>) => ActionResult
+  rejectProposal: (proposalId: string, note?: string) => ActionResult
+  applyProposal: (proposalId: string, note?: string) => ActionResult
+  createProposal: (input: CreateProposalInput) => AgentProposal
+  updateProposal: (id: string, patch: Partial<AgentProposal>) => ActionResult
+  setProposalActionDecision: (
+    id: string,
+    actionId: string,
+    decision: ProposalActionDecision,
+  ) => ActionResult
+  deleteProposal: (id: string) => ActionResult
   createBlankProject: (input: BlankProjectInput) => ActionResult
   updateProject: (
     patch: Partial<ProjectDataState["project"]>,
@@ -312,27 +325,6 @@ export interface ProjectActions {
     content: string,
   ) => ActionResult
   undoLastChange: () => ActionResult
-  createProposal: (input: CreateProposalInput) => AgentProposal
-  saveProposal: (proposal: AgentProposal) => ActionResult
-  updateProposal: (id: string, patch: Partial<AgentProposal>) => ActionResult
-  updateProposalValue: (
-    id: string,
-    actionId: string,
-    value: Record<string, unknown>,
-  ) => ActionResult
-  setProposalActionDecision: (
-    id: string,
-    actionId: string,
-    decision: ProposalActionDecision,
-  ) => ActionResult
-  setProposalDecision: (
-    proposalId: string,
-    actionId: string,
-    decision: ProposalActionDecision,
-  ) => ActionResult
-  rejectProposal: (id: string, note?: string, reviewedBy?: string) => ActionResult
-  applyProposal: (id: string, reviewedByOrNote?: string) => ActionResult
-  deleteProposal: (id: string) => ActionResult
   exportProjectJson: () => string
   importProjectJson: (json: string) => ActionResult
   resetDemoData: () => void
@@ -368,8 +360,10 @@ const dataKeys: (keyof ProjectDataState)[] = [
   "impactAnalyses",
   "sprintPulses",
   "discussions",
-  "proposals",
   "history",
+  "proposals",
+  "meetingSessions",
+  "meetingMessages",
   "workspace",
 ]
 
@@ -396,8 +390,6 @@ function historyItem(
   before: unknown,
   after: unknown,
   source: ChangeSource,
-  proposalId?: string,
-  proposalActionId?: string,
 ): ChangeHistoryItem {
   return {
     id: makeId("history"),
@@ -409,8 +401,6 @@ function historyItem(
     before: structuredClone(before),
     after: structuredClone(after),
     source,
-    ...(proposalId ? { proposalId } : {}),
-    ...(proposalActionId ? { proposalActionId } : {}),
   }
 }
 
@@ -418,7 +408,8 @@ function appendHistory(
   history: ChangeHistoryItem[],
   items: ChangeHistoryItem[],
 ) {
-  return [...history, ...items].slice(-240)
+  const all = [...history, ...items]
+  return all.filter((entry, index) => entry.source === "agent" || index >= all.length - 240)
 }
 
 function appendImpact(
@@ -426,86 +417,6 @@ function appendImpact(
   item?: ImpactAnalysisEntity | null,
 ) {
   return item ? [...items, item].slice(-100) : items
-}
-
-function proposalObjectType(
-  targetType: ProposalTargetType,
-): ChangeHistoryItem["objectType"] {
-  if (targetType === "member") return "project"
-  if (
-    targetType === "sprint" ||
-    targetType === "story" ||
-    targetType === "task" ||
-    targetType === "subtask" ||
-    targetType === "dependency" ||
-    targetType === "risk"
-  ) {
-    return targetType
-  }
-  return "project"
-}
-
-function readProposalTarget(
-  state: ProjectDataState,
-  targetType: ProposalTargetType,
-  targetId: string,
-): unknown {
-  if (targetType === "project") return state.project
-  if (targetType === "sprint") return state.sprints[targetId]
-  if (targetType === "story") return state.stories[targetId]
-  if (targetType === "task") return state.tasks[targetId]
-  if (targetType === "subtask") return state.subtasks[targetId]
-  if (targetType === "member") return state.members[targetId]
-  if (targetType === "risk") return state.risks[targetId]
-  return state.dependencies[targetId]
-}
-
-function readProposalField(
-  state: ProjectDataState,
-  targetType: ProposalTargetType,
-  targetId: string,
-  field: string,
-): unknown {
-  const entity = readProposalTarget(state, targetType, targetId)
-  if (!entity || typeof entity !== "object") return undefined
-  return (entity as Record<string, unknown>)[field]
-}
-
-function proposalActionResult(
-  ok: boolean,
-  message: string,
-  result: unknown = null,
-) {
-  return { ok, message, result }
-}
-
-/** CREATE_SUBTASK 的 targetId 可以是前置 CREATE_TASK 动作的 ID，执行时解析为真实任务 ID。 */
-function resolvedActionTargetId(
-  state: ProjectDataState,
-  rawTargetId: string,
-  action: ProposalAction,
-): string {
-  if (state.tasks[rawTargetId]) return rawTargetId
-  if (action.dependsOnActionIds.includes(rawTargetId)) return rawTargetId
-  return rawTargetId
-}
-
-/** 把 dependsOn 链上前置动作的真实实体 ID 回填到后续动作的引用里。 */
-function resolveValueIds(
-  value: unknown,
-  resolvedIds: Map<string, string>,
-): unknown {
-  if (typeof value === "string") return resolvedIds.get(value) ?? value
-  if (Array.isArray(value)) return value.map((item) => resolveValueIds(item, resolvedIds))
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-        key,
-        resolveValueIds(item, resolvedIds),
-      ]),
-    )
-  }
-  return value
 }
 
 function executionSprint(
@@ -1443,7 +1354,7 @@ function normalizeProjectData(
   }
   const refreshDemoContent =
     incoming.project?.id === demo.project.id &&
-    ((incoming.schemaVersion ?? 0) < CURRENT_SCHEMA_VERSION ||
+    ((incoming.schemaVersion ?? 0) < 13 ||
       (incoming.project?.startDate === "2026-08-24" &&
         !incoming.assets?.["asset-class-project-model"]))
   const members = Object.fromEntries(
@@ -1849,7 +1760,9 @@ function normalizeProjectData(
     impactAnalyses: incoming.impactAnalyses ?? demo.impactAnalyses,
     sprintPulses: incoming.sprintPulses ?? demo.sprintPulses,
     discussions,
-    proposals: incoming.proposals ?? demo.proposals,
+    proposals: incoming.proposals ?? {},
+    meetingSessions: incoming.meetingSessions ?? {},
+    meetingMessages: incoming.meetingMessages ?? {},
     workspace: {
       ...demo.workspace,
       ...(incoming.workspace ?? {}),
@@ -1867,14 +1780,548 @@ function normalizeProjectData(
   }
 }
 
+const initialDemoState = normalizeProjectData(createDemoProjectState())
+
 function createInitialProjectState() {
-  return normalizeProjectData(createDemoProjectState())
+  return structuredClone(initialDemoState)
 }
+
+function proposalEntity(state: ProjectDataState, type: ProposalAction["targetType"], id: string): unknown {
+  switch (type) {
+    case "project": return state.project.id === id ? state.project : undefined
+    case "sprint": return state.sprints[id]
+    case "story": return state.stories[id]
+    case "task": return state.tasks[id]
+    case "subtask": return state.subtasks[id]
+    case "member": return state.members[id]
+    case "dependency": return state.dependencies[id]
+    case "risk": return state.risks[id]
+  }
+}
+
+function staleReason(state: ProjectDataState, action: ProposalAction, appliedActions: ProposalAction[] = []): string | null {
+  for (const condition of action.preconditions) {
+    const entity = proposalEntity(state, condition.targetType, condition.targetId)
+    if (!entity || typeof entity !== "object") return `${condition.targetType} ${condition.targetId} 已不存在`
+    const current = condition.targetType === "story" && condition.field === "acceptanceCriteriaContents"
+      ? state.stories[condition.targetId].acceptanceCriteriaIds.map((id) => state.acceptanceCriteria[id]?.content ?? null)
+      : condition.targetType === "story" && condition.field === "openRiskIds"
+        ? Object.values(state.risks).filter((risk) => risk.targetType === "story" && risk.targetId === condition.targetId && risk.status !== "resolved").map((risk) => risk.id).sort()
+      : condition.targetType === "story" && condition.field === "taskIds"
+        ? (entity as StoryEntity).taskIds.filter((id) => !appliedActions.some((applied) => applied.actionType === "CREATE_TASK" && applied.status === "applied" && applied.targetId === condition.targetId && applied.resultTargetId === id))
+      : (entity as Record<string, unknown>)[condition.field]
+    if (JSON.stringify(current) !== JSON.stringify(condition.expectedValue)) {
+      return `${condition.targetType} ${condition.targetId}.${condition.field} 已变化，请重新发起会议确认`
+    }
+  }
+  return null
+}
+
+function validateProposalValue(state: ProjectDataState, action: ProposalAction): string | null {
+  const value = action.proposedValue
+  const expectedTarget: Record<ProposalAction["actionType"], ProposalAction["targetType"] | "risk_target" | "any"> = {
+    CREATE_TASK: "story", CREATE_SUBTASK: "task", UPDATE_TASK: "task",
+    UPDATE_SUBTASK: "subtask", UPDATE_STORY: "story", CREATE_RISK: "risk_target",
+    UPDATE_RISK: "risk", ADD_DEPENDENCY: "dependency",
+    CREATE_DISCUSSION: "any", BLOCK_TASK: "task", REMOVE_DEPENDENCY: "dependency",
+    UPDATE_DEADLINE: "any", CHANGE_ASSIGNEE: "any", CHANGE_PRIORITY: "story",
+  }
+  if (!action.preconditions.length) return "Action 缺少执行前置条件"
+  const target = expectedTarget[action.actionType]
+  if (target !== "any" && (target === "risk_target" ? !["story", "task", "sprint"].includes(action.targetType) : action.targetType !== target)) return "Action 目标类型无效"
+  const allowed: Record<ProposalAction["actionType"], string[]> = {
+    CREATE_TASK: ["title", "type", "estimate", "assigneeId", "startDate", "endDate", "storyId"],
+    CREATE_SUBTASK: ["title", "estimate", "assigneeId", "taskId"],
+    UPDATE_TASK: ["title", "type", "estimate", "assigneeId", "startDate", "endDate", "status", "progress"],
+    UPDATE_SUBTASK: ["title", "estimate", "assigneeId", "startDate", "endDate", "status", "progress"],
+    UPDATE_STORY: ["risk", "riskNote", "assigneeId", "title", "priority", "dueDate", "storyPoints"],
+    CREATE_RISK: ["title", "targetType", "targetId", "level", "description", "impact", "mitigation", "ownerId", "status"],
+    UPDATE_RISK: ["title", "level", "description", "impact", "mitigation", "ownerId", "status"],
+    ADD_DEPENDENCY: ["sourceTaskId", "targetTaskId"],
+    CREATE_DISCUSSION: ["content", "targetType", "targetId"],
+    BLOCK_TASK: ["taskId", "message", "relatedTaskId"],
+    REMOVE_DEPENDENCY: ["dependencyId"],
+    UPDATE_DEADLINE: ["endDate"],
+    CHANGE_ASSIGNEE: ["assigneeId"],
+    CHANGE_PRIORITY: ["priority"],
+  }
+  if (!Object.keys(value).length || Object.keys(value).some((field) => !allowed[action.actionType].includes(field))) return "建议包含不允许修改的字段"
+  const required: Partial<Record<ProposalAction["actionType"], string[]>> = {
+    CREATE_TASK: ["title", "type", "estimate", "assigneeId", "startDate", "endDate"],
+    CREATE_SUBTASK: ["title", "estimate", "assigneeId"],
+    CREATE_RISK: ["title", "targetType", "targetId", "level", "description", "impact", "mitigation", "ownerId", "status"],
+    ADD_DEPENDENCY: ["sourceTaskId", "targetTaskId"],
+    CREATE_DISCUSSION: ["content"],
+    BLOCK_TASK: ["taskId"],
+    REMOVE_DEPENDENCY: ["dependencyId"],
+    UPDATE_DEADLINE: ["endDate"],
+    CHANGE_ASSIGNEE: ["assigneeId"],
+    CHANGE_PRIORITY: ["priority"],
+  }
+  if (required[action.actionType]?.some((field) => !(field in value))) return "建议缺少必填字段"
+  if ("title" in value && (typeof value.title !== "string" || !value.title.trim())) return "标题不能为空"
+  if ("estimate" in value && (typeof value.estimate !== "number" || !Number.isFinite(value.estimate) || value.estimate < 0 || value.estimate > 1000)) return "预计工时须为 0 至 1000 小时"
+  if ("assigneeId" in value && (typeof value.assigneeId !== "string" || !state.members[value.assigneeId])) return "负责人不存在"
+  if ("ownerId" in value && (typeof value.ownerId !== "string" || !state.members[value.ownerId])) return "风险负责人不存在"
+  if ("type" in value && !["frontend", "backend", "database", "test", "design", "devops"].includes(String(value.type))) return "任务类型无效"
+  if ("risk" in value && !["none", "low", "medium", "high"].includes(String(value.risk))) return "风险级别无效"
+  if ("level" in value && !["low", "medium", "high"].includes(String(value.level))) return "风险级别无效"
+  if ("status" in value && (action.actionType === "CREATE_RISK" || action.actionType === "UPDATE_RISK") && !["open", "mitigating", "resolved"].includes(String(value.status))) return "风险状态无效"
+  if (action.actionType === "ADD_DEPENDENCY" && (typeof value.sourceTaskId !== "string" || typeof value.targetTaskId !== "string")) return "依赖任务 ID 无效"
+  for (const field of ["startDate", "endDate", "riskNote", "description", "impact", "mitigation"] as const) {
+    if (field in value && typeof value[field] !== "string") return `${field} 格式无效`
+  }
+  if ("startDate" in value && "endDate" in value && String(value.endDate) < String(value.startDate)) return "结束日期不能早于开始日期"
+  if (action.actionType === "CREATE_RISK" && (value.targetType !== action.targetType || value.targetId !== action.targetId || !["story", "task", "sprint"].includes(String(value.targetType)))) return "风险目标无效"
+  return null
+}
+
+function executeProposalAction(store: ProjectStore, action: ProposalAction, resolvedIds: Record<string, string>): { ok: boolean; message: string; id: string | null } {
+  const value = action.proposedValue
+  const patch = value as Record<string, never>
+  switch (action.actionType) {
+    case "CREATE_TASK": {
+      const created = store.createTask(action.targetId, value as Partial<TaskEntity>)
+      return { ok: true, message: "Task 已创建", id: created.id }
+    }
+    case "CREATE_SUBTASK": {
+      const parentId = resolvedIds[action.targetId] ?? (store.tasks[action.targetId] ? action.targetId : undefined)
+      if (!parentId) return { ok: false, message: "父 Task 未创建", id: null }
+      const created = store.addSubtask(parentId, String(value.title))
+      const updated = store.updateSubtask(created.id, { estimate: Number(value.estimate), assigneeId: String(value.assigneeId) }, "agent")
+      return { ...updated, id: created.id }
+    }
+    case "UPDATE_TASK": return { ...store.updateTask(action.targetId, patch as Partial<TaskEntity>, "agent"), id: action.targetId }
+    case "UPDATE_SUBTASK": return { ...store.updateSubtask(action.targetId, patch as Partial<SubtaskEntity>, "agent"), id: action.targetId }
+    case "UPDATE_STORY": return { ...store.updateStory(action.targetId, patch as Partial<StoryEntity>, "agent"), id: action.targetId }
+    case "CREATE_RISK": {
+      const created = store.createRisk(value as unknown as Omit<RiskEntity, "id" | "createdAt" | "updatedAt">)
+      return { ok: true, message: "Risk 已创建", id: created.id }
+    }
+    case "UPDATE_RISK": return { ...store.updateRisk(action.targetId, patch as Partial<RiskEntity>), id: action.targetId }
+    case "ADD_DEPENDENCY": {
+      const source = resolvedIds[String(value.sourceTaskId)] ?? String(value.sourceTaskId)
+      const target = resolvedIds[String(value.targetTaskId)] ?? String(value.targetTaskId)
+      const result = store.addDependency(source, target)
+      const found = Object.values(useProjectStore.getState().dependencies).find((item) => item.sourceTaskId === source && item.targetTaskId === target)
+      return { ...result, id: found?.id ?? null }
+    }
+    case "CREATE_DISCUSSION": {
+      const targetType = (typeof value.targetType === "string" &&
+        (value.targetType === "story" || value.targetType === "task")
+        ? value.targetType
+        : (action.targetType === "story" || action.targetType === "task"
+          ? action.targetType
+          : "project")) as DiscussionMessageEntity["targetType"]
+      const targetId = typeof value.targetId === "string" && value.targetId
+        ? value.targetId
+        : action.targetId
+      const result = store.addDiscussion(
+        targetType,
+        targetId,
+        typeof value.content === "string" && value.content ? value.content : action.reason,
+      )
+      return { ...result, id: null }
+    }
+    case "BLOCK_TASK": {
+      const taskId = typeof value.taskId === "string" && value.taskId ? value.taskId : action.targetId
+      const result = store.addTaskBlockReason(
+        taskId,
+        typeof value.message === "string" && value.message ? value.message : action.reason,
+        typeof value.relatedTaskId === "string" ? value.relatedTaskId : null,
+      )
+      return { ...result, id: taskId }
+    }
+    case "REMOVE_DEPENDENCY": {
+      const dependencyId = typeof value.dependencyId === "string" && value.dependencyId
+        ? value.dependencyId
+        : action.targetId
+      const result = store.deleteDependency(dependencyId)
+      return { ...result, id: dependencyId }
+    }
+    case "UPDATE_DEADLINE":
+    case "CHANGE_ASSIGNEE":
+      return executeProposalAction(store, { ...action, actionType: "UPDATE_TASK" }, resolvedIds)
+    case "CHANGE_PRIORITY":
+      return executeProposalAction(store, { ...action, actionType: "UPDATE_STORY" }, resolvedIds)
+  }
+}
+
+export interface ProposalActionInput {
+  actionType: ProposalActionType
+  targetType: ProposalTargetType
+  targetId: string
+  proposedValue: Record<string, unknown>
+  reason: string
+  beforeValue?: unknown
+  preconditions?: ProposalPrecondition[]
+  dependsOnActionIds?: string[]
+}
+
+export interface CreateProposalInput {
+  origin: ProposalOrigin
+  triggerType: ProposalTriggerType
+  agentType: AgentType
+  targetType: ProposalTargetType
+  targetId: string
+  summary: string
+  reasoning: string
+  evidence: ProposalEvidence[]
+  actions: ProposalActionInput[]
+}
+
+export const PROPOSAL_SCHEMA_VERSION = 1
+const PROPOSAL_LIMIT = 50
 
 export const useProjectStore = create<ProjectStore>()(
   persist(
     (set, get) => ({
       ...createInitialProjectState(),
+
+      createMeeting: (targetType, targetId) => {
+        const state = get()
+        const story = targetType === "story" ? state.stories[targetId] : null
+        const sprint = targetType === "sprint" ? state.sprints[targetId] : null
+        const project = targetType === "project" && state.project.id === targetId ? state.project : null
+        if (!story && !sprint && !project) throw new Error("会议目标不存在")
+        const participantIds = [...new Set([
+          state.workspace.currentUserId,
+          ...(story ? [story.assigneeId, ...story.collaboratorIds] : sprint?.memberIds ?? []),
+          ...Object.keys(state.members),
+        ])].filter((id) => Boolean(state.members[id])).slice(0, 4)
+        const id = makeId("meeting")
+        const targetName = story?.title ?? sprint?.name ?? project!.name
+        const title = targetType === "project" ? "AI 项目协作会议" : `${targetType === "story" ? "Story 规划" : "Sprint 规划"}会议`
+        const session: MeetingSession = {
+          id, projectId: state.project.id, targetType, targetId, title,
+          status: "active", participantIds, createdBy: state.workspace.currentUserId,
+           createdAt: nowIso(), endedAt: null, messageIds: [], proposalIds: [], topics: [], facts: [],
+          memory: {
+            ...createMeetingMemory(),
+            focusStoryIds: story ? [story.id] : [],
+            focusSprintId: sprint?.id ?? story?.sprintId ?? null,
+          },
+        }
+        synchronizeWorkingState(session.memory!, state, session)
+        const existingTasks = story ? story.taskIds.length : Object.values(state.tasks).filter((task) => state.stories[task.storyId]?.sprintId === targetId).length
+        const sprintName = story?.sprintId ? state.sprints[story.sprintId]?.name : sprint?.name
+        const currentSprint = buildProjectAnalysisSnapshot(state, session, session.memory!).activeSprint
+        const openRisks = Object.values(state.risks).filter((risk) => risk.status !== "resolved").length
+        const unfinished = Object.values(state.tasks).filter((task) => task.status !== "done").length
+        const welcome: MeetingMessage = {
+          id: makeId("meeting-message"), meetingId: id, senderType: "agent",
+          senderId: "project_orchestrator", createdAt: nowIso(),
+          content: project
+            ? `项目会议已创建。目前${currentSprint ? currentSprint.effectiveStatus === "overdue" ? `${currentSprint.name} 在项目中仍标为进行中，但计划期已过` : `${currentSprint.name} 正在${currentSprint.status === "active" ? "进行" : "规划"}` : "没有进行中的 Sprint"}，项目共有 ${Object.keys(state.stories).length} 个 Story、${unfinished} 个未完成任务和 ${openRisks} 项未解决风险。可以讨论整个项目，也可以 @成员、@专业助手，或用 # 引用具体工作。`
+            : `会议已创建。我们正在讨论${targetType === "story" ? ` ${story!.id.toUpperCase()}「${targetName}」` : `「${targetName}」`}。${sprintName ? `它属于 ${sprintName}，` : ""}目前有 ${existingTasks} 个任务。你可以直接提问，也可以输入 @ 让专业助手一起分析。`,
+        }
+        session.messageIds.push(welcome.id)
+        set((current) => ({
+          meetingSessions: { ...current.meetingSessions, [id]: session },
+          meetingMessages: { ...current.meetingMessages, [welcome.id]: welcome },
+        }))
+        return session
+      },
+
+      addMeetingMessage: (meetingId, input) => {
+        const session = get().meetingSessions[meetingId]
+        if (!session || session.status !== "active") throw new Error("会议已结束，请发起新会议")
+        if (!input.content.trim()) throw new Error("消息不能为空")
+        const message: MeetingMessage = {
+          ...input, id: makeId("meeting-message"), meetingId,
+          content: input.content.trim(), createdAt: nowIso(),
+        }
+         const fact = meetingFactFromMessage(get(), message)
+         set((state) => ({
+           meetingMessages: { ...state.meetingMessages, [message.id]: message },
+           meetingSessions: { ...state.meetingSessions, [meetingId]: {
+             ...state.meetingSessions[meetingId],
+             messageIds: [...state.meetingSessions[meetingId].messageIds, message.id],
+             facts: fact ? [ ...(state.meetingSessions[meetingId].facts ?? []).map((previous) =>
+               fact.type === "fact" && fact.status === "confirmed" && previous.type === "hypothesis" &&
+               previous.relatedEntityIds.some((id) => fact.relatedEntityIds.includes(id))
+                 ? { ...previous, status: "confirmed" as const } : previous), fact] : state.meetingSessions[meetingId].facts,
+             topics: fact ? topicFromMeetingFact(state.meetingSessions[meetingId], fact) : state.meetingSessions[meetingId].topics,
+           } },
+        }))
+        return message
+      },
+
+      setMeetingPresentation: (meetingId, patch) => {
+        set(state => ({ meetingSessions: { ...state.meetingSessions, [meetingId]: { ...state.meetingSessions[meetingId], ...patch } } }))
+      },
+
+      endMeeting: (meetingId) => {
+         const session = get().meetingSessions[meetingId]
+         if (!session || session.status === "ended") return { ok: false, message: "会议已结束或不存在" }
+         const ended = { ...session, status: "ended" as const, endedAt: nowIso(),
+           topics: session.topics?.map((topic) => topic.status === "active" ? { ...topic, status: "recorded" as const } : topic) }
+         set((state) => ({ meetingSessions: { ...state.meetingSessions, [meetingId]: {
+           ...ended, minutes: generateMeetingMinutes(state, ended),
+         } } }))
+        return { ok: true, message: "会议已结束，记录已保存" }
+      },
+
+      linkMeetingProposal: (meetingId, proposalId) => {
+        const session = get().meetingSessions[meetingId]
+        const proposal = get().proposals[proposalId]
+        if (!session || !proposal || session.projectId !== proposal.projectId) return { ok: false, message: "会议或建议不存在" }
+        if (session.proposalIds.includes(proposalId)) return { ok: true, message: "建议已关联会议" }
+        set((state) => ({ meetingSessions: { ...state.meetingSessions, [meetingId]: {
+          ...session, proposalIds: [...session.proposalIds, proposalId],
+        } } }))
+        return { ok: true, message: "建议已加入会议" }
+      },
+
+      setMeetingMemory: (meetingId, memory) => {
+        synchronizeWorkingState(memory)
+        const session = get().meetingSessions[meetingId]
+        if (!session || session.status !== "active") return { ok: false, message: "会议已结束或不存在" }
+         const source = [...session.messageIds].reverse().map((id) => get().meetingMessages[id]).find((item) => item?.senderType === "user")
+         set((state) => ({ meetingSessions: { ...state.meetingSessions, [meetingId]: {
+           ...session, memory: structuredClone(memory),
+           topics: source ? recordMeetingTopic(session, source, memory) : session.topics,
+         } } }))
+        return { ok: true, message: "会议决策已保存" }
+      },
+
+      recordMeetingQaTrace: (meetingId, trace) => {
+        const session = get().meetingSessions[meetingId]
+        if (!session) return { ok: false, message: "会议不存在" }
+        set((state) => ({ meetingSessions: { ...state.meetingSessions, [meetingId]: {
+          ...session, qaTrace: [...(session.qaTrace ?? []), structuredClone(trace)],
+        } } }))
+        return { ok: true, message: "会议质量轨迹已记录" }
+      },
+
+      saveProposal: (proposal) => {
+        if (proposal.projectId !== get().project.id || get().proposals[proposal.id]) return { ok: false, message: "Proposal 项目不匹配或已存在" }
+        if (proposal.schemaVersion !== 1 || !proposal.id || new Set(proposal.actions.map((item) => item.id)).size !== proposal.actions.length) return { ok: false, message: "Proposal 协议无效" }
+        set((state) => ({ proposals: { ...state.proposals, [proposal.id]: structuredClone(proposal) } }))
+        return { ok: true, message: "Proposal 已保存" }
+      },
+
+      setProposalDecision: (proposalId, actionId, decision) => {
+        const proposal = get().proposals[proposalId]
+        if (!proposal || !["draft", "reviewed"].includes(proposal.status)) return { ok: false, message: "Proposal 不可审核" }
+        const target = proposal.actions.find((action) => action.id === actionId)
+        if (!target || target.status !== "pending") return { ok: false, message: "Action 不可审核" }
+        const actions = proposal.actions.map((item) => item.id === actionId ? { ...item, decision } : item)
+        const reviewed = actions.every((item) => item.decision !== "pending")
+         set((state) => ({ proposals: { ...state.proposals, [proposalId]: {
+           ...proposal, actions, reviewedActions: structuredClone(actions), status: reviewed ? "reviewed" : "draft", updatedAt: nowIso(),
+           reviewedBy: reviewed ? state.workspace.currentUserId : proposal.reviewedBy,
+           reviewedAt: reviewed ? nowIso() : proposal.reviewedAt,
+         } } }))
+         set((state) => ({ meetingSessions: refreshedEndedMeetingMinutes(state, proposalId) }))
+        return { ok: true, message: "审核决策已保存" }
+      },
+
+      updateProposalValue: (proposalId, actionId, value) => {
+        const proposal = get().proposals[proposalId]
+        if (!proposal || !["draft", "reviewed"].includes(proposal.status)) return { ok: false, message: "Proposal 不可修改" }
+        const target = proposal.actions.find((action) => action.id === actionId)
+        if (!target || target.status !== "pending") return { ok: false, message: "Action 不可修改" }
+        const next = { ...target, proposedValue: structuredClone(value) }
+        const invalid = validateProposalValue(get(), next)
+        if (invalid) return { ok: false, message: invalid }
+         set((state) => ({ proposals: { ...state.proposals, [proposalId]: {
+           ...proposal, actions: proposal.actions.map((item) => item.id === actionId ? next : item),
+           reviewedActions: structuredClone(proposal.actions.map((item) => item.id === actionId ? next : item)), updatedAt: nowIso(),
+         } } }))
+         set((state) => ({ meetingSessions: refreshedEndedMeetingMinutes(state, proposalId) }))
+        return { ok: true, message: "人工修改已保存" }
+      },
+
+      rejectProposal: (proposalId, note = "") => {
+        const proposal = get().proposals[proposalId]
+        if (!proposal || !["draft", "reviewed"].includes(proposal.status)) return { ok: false, message: "Proposal 不可驳回" }
+         set((state) => ({ proposals: { ...state.proposals, [proposalId]: {
+           ...proposal, actions: proposal.actions.map((action) => ({ ...action, decision: "rejected" as const })),
+           reviewedActions: proposal.actions.map((action) => ({ ...action, decision: "rejected" as const })),
+           status: "rejected", reviewNote: note, reviewedBy: state.workspace.currentUserId,
+           reviewedAt: nowIso(), updatedAt: nowIso(),
+         } } }))
+         set((state) => ({ meetingSessions: refreshedEndedMeetingMinutes(state, proposalId) }))
+        return { ok: true, message: "Proposal 已驳回" }
+      },
+
+      applyProposal: (proposalId, note = "") => {
+        const proposal = get().proposals[proposalId]
+        if (!proposal || !["draft", "reviewed"].includes(proposal.status)) return { ok: false, message: "Proposal 不可执行" }
+        if (proposal.projectId !== get().project.id) return { ok: false, message: "Proposal 不属于当前项目" }
+        const owningMeeting = Object.values(get().meetingSessions).find((session) => session.proposalIds.includes(proposalId))
+        if (proposal.constraintsSnapshot || proposal.agentType === "plan_execution" && owningMeeting) {
+          const finalReview = revalidateReviewedProposal(get(), proposal, owningMeeting)
+          if (!finalReview.valid) {
+            const actions=proposal.actions.map(action=>{
+              const stale=action.decision==='accepted'?staleReason(get(),action):null
+              return stale?{...action,status:'stale' as const,error:stale}:action
+            })
+            if(actions.some(action=>action.status==='stale')) set(state=>({proposals:{...state.proposals,[proposalId]:{...proposal,actions,status:'failed',applyError:finalReview.errors.join('；')}}}))
+            return { ok: false, message: `最终计划未通过校验：${finalReview.errors.join("；")}` }
+          }
+        }
+        const accepted = proposal.actions.filter((action) => action.decision === "accepted")
+        if (!accepted.length) return { ok: false, message: "请先采纳至少一条 Action" }
+        const started: AgentProposal = {
+          ...proposal, status: "applying", reviewedBy: get().workspace.currentUserId,
+          reviewedAt: proposal.reviewedAt ?? nowIso(), reviewNote: note,
+          updatedAt: nowIso(),
+        }
+        set((state) => ({ proposals: { ...state.proposals, [proposalId]: started } }))
+        const results = structuredClone(started.actions)
+        const pending = results.filter((item) => item.decision === "accepted")
+        while (pending.length) {
+          const readyIndex = pending.findIndex((item) => item.dependsOnActionIds.every((id) => !pending.some((candidate) => candidate.id === id)))
+          if (readyIndex < 0) {
+            for (const item of pending) {
+              item.status = "failed"
+              item.error = "Action 依赖存在循环"
+            }
+            set((state) => ({ proposals: { ...state.proposals, [proposalId]: {
+              ...state.proposals[proposalId], actions: structuredClone(results), updatedAt: nowIso(),
+            } } }))
+            break
+          }
+          const [item] = pending.splice(readyIndex, 1)
+          const dependencies = item.dependsOnActionIds.map((id) => results.find((candidate) => candidate.id === id))
+          const failedDependency = dependencies.find((candidate) => !candidate || candidate.status !== "applied")
+          if (failedDependency) {
+            item.status = "failed"
+            item.error = `依赖 Action ${failedDependency?.id ?? "不存在"} 未成功执行`
+          } else {
+            const stale = staleReason(get(), item, results)
+            if (stale) {
+              item.status = "stale"
+              item.error = stale
+            } else {
+              const invalid = validateProposalValue(get(), item)
+              if (invalid) {
+                item.status = "failed"
+                item.error = invalid
+              } else {
+                const beforeIds = new Set(get().history.map((entry) => entry.id))
+                try {
+                  const resolvedIds = Object.fromEntries(results.filter((candidate) => candidate.resultTargetId).map((candidate) => [candidate.id, candidate.resultTargetId!]))
+                  const result = executeProposalAction(get(), item, resolvedIds)
+                  item.resultTargetId = result.id
+                  const changed = get().history.some((entry) => !beforeIds.has(entry.id))
+                  item.status = result.ok && changed ? "applied" : "failed"
+                  item.error = item.status === "failed" ? (result.ok ? "Store Action 未产生实际变更" : result.message) : null
+                  if (item.status === "applied") item.appliedAt = nowIso()
+                } catch (error) {
+                  item.status = "failed"
+                  item.error = error instanceof Error ? error.message : "执行失败"
+                }
+                set((state) => ({ history: state.history.map((entry) => beforeIds.has(entry.id) ? entry : {
+                  ...entry, source: "agent" as const, proposalId, proposalActionId: item.id,
+                }) }))
+              }
+            }
+          }
+          set((state) => ({ proposals: { ...state.proposals, [proposalId]: {
+            ...state.proposals[proposalId], actions: structuredClone(results), updatedAt: nowIso(),
+          } } }))
+        }
+        const succeeded = results.filter((item) => item.status === "applied").length
+        const failures = results.filter((item) => item.status === "failed" || item.status === "stale")
+        const status: AgentProposal["status"] = succeeded
+          ? failures.length ? "partially_applied" : "applied"
+          : "failed"
+         set((state) => ({ proposals: { ...state.proposals, [proposalId]: {
+           ...state.proposals[proposalId], actions: results, status,
+           appliedAt: succeeded ? nowIso() : null, updatedAt: nowIso(),
+           applyError: failures.length ? failures.map((item) => `${item.id}: ${item.error}`).join("；") : null,
+         } } }))
+         set((state) => ({ meetingSessions: refreshedEndedMeetingMinutes(state, proposalId) }))
+        const rejected = results.filter((item) => item.decision === "rejected").length
+        return { ok: status === "applied", message: status === "applied" ? `计划已应用：${succeeded} 项变更执行成功${rejected ? `，${rejected} 项建议按你的决定未执行` : ""}` : status === "partially_applied" ? "部分建议已应用，请查看失败或过期项" : "建议未能应用，请查看原因" }
+      },
+
+      createProposal: (input) => {
+        const now = nowIso()
+        const proposalId = makeId("proposal")
+        const actions: ProposalAction[] = input.actions.map((action) => ({
+          id: makeId("action"),
+          actionType: action.actionType,
+          targetType: action.targetType,
+          targetId: action.targetId,
+          beforeValue: structuredClone(action.beforeValue ?? null),
+          proposedValue: structuredClone(action.proposedValue),
+          reason: action.reason,
+          decision: "pending",
+          status: "pending",
+          preconditions: structuredClone(action.preconditions ?? []),
+          dependsOnActionIds: action.dependsOnActionIds ?? [],
+          resultTargetId: null,
+          appliedAt: null,
+          error: null,
+        }))
+        const proposal: AgentProposal = {
+          schemaVersion: PROPOSAL_SCHEMA_VERSION,
+          id: proposalId,
+          projectId: get().project.id,
+          origin: input.origin,
+          triggerType: input.triggerType,
+          agentType: input.agentType,
+          targetType: input.targetType,
+          targetId: input.targetId,
+          summary: input.summary,
+          reasoning: input.reasoning,
+          evidence: input.evidence,
+          originalActions: structuredClone(actions),
+          actions,
+          status: "draft",
+          createdBy: get().workspace.currentUserId,
+          createdAt: now,
+          updatedAt: now,
+          reviewedBy: null,
+          reviewedAt: null,
+          reviewNote: "",
+          appliedAt: null,
+          applyError: null,
+        }
+        set((state) => {
+          const merged = { ...state.proposals, [proposalId]: proposal }
+          const ids = Object.keys(merged).sort((a, b) =>
+            merged[a].createdAt.localeCompare(merged[b].createdAt),
+          )
+          const kept = ids.length > PROPOSAL_LIMIT ? ids.slice(-PROPOSAL_LIMIT) : ids
+          return {
+            proposals: Object.fromEntries(kept.map((key) => [key, merged[key]])),
+          }
+        })
+        return proposal
+      },
+
+      updateProposal: (id, patch) => {
+        const proposal = get().proposals[id]
+        if (!proposal) return { ok: false, message: "Proposal 不存在" }
+        if (proposal.status === "applied" || proposal.status === "rejected") {
+          return { ok: false, message: "已结束的 Proposal 不能再次修改" }
+        }
+        set((state) => ({
+          proposals: {
+            ...state.proposals,
+            [id]: { ...proposal, ...patch, id, updatedAt: nowIso() },
+          },
+        }))
+        return { ok: true, message: "Proposal 已更新" }
+      },
+
+      setProposalActionDecision: (id, actionId, decision) =>
+        get().setProposalDecision(id, actionId, decision),
+
+      deleteProposal: (id) => {
+        if (!get().proposals[id]) return { ok: false, message: "Proposal 不存在" }
+        set((state) => {
+          const next = { ...state.proposals }
+          delete next[id]
+          return { proposals: next }
+        })
+        return { ok: true, message: "Proposal 已删除" }
+      },
 
       createBlankProject: (input) => {
         if (!input.name.trim() || !input.goal.trim()) {
@@ -1941,8 +2388,10 @@ export const useProjectStore = create<ProjectStore>()(
           impactAnalyses: [],
           sprintPulses: {},
           discussions: {},
-          proposals: {},
           history: [historyItem("project", projectId, "create", null, project, "ui")],
+          proposals: {},
+          meetingSessions: {},
+          meetingMessages: {},
           workspace,
         })
         return { ok: true, message: "空白项目已创建" }
@@ -4818,350 +5267,8 @@ export const useProjectStore = create<ProjectStore>()(
         return { ok: false, message: "该操作暂不支持撤销" }
       },
 
-      createProposal: (input) => {
-        const now = nowIso()
-        const proposalId = makeId("proposal")
-        const actions: ProposalAction[] = input.actions.map((action) => ({
-          id: makeId("action"),
-          actionType: action.actionType,
-          targetType: action.targetType,
-          targetId: action.targetId,
-          beforeValue: structuredClone(action.beforeValue ?? null),
-          proposedValue: structuredClone(action.proposedValue ?? null),
-          reason: action.reason,
-          decision: "pending",
-          status: "pending",
-          preconditions: structuredClone(action.preconditions ?? []),
-          dependsOnActionIds: action.dependsOnActionIds ?? [],
-          resultTargetId: null,
-          appliedAt: null,
-          error: "",
-        }))
-        const proposal: AgentProposal = {
-          schemaVersion: PROPOSAL_SCHEMA_VERSION,
-          id: proposalId,
-          projectId: get().project.id,
-          origin: input.origin,
-          triggerType: input.triggerType,
-          agentType: input.agentType,
-          targetType: input.targetType,
-          targetId: input.targetId,
-          summary: input.summary,
-          reasoning: input.reasoning,
-          evidence: input.evidence,
-          originalActions: structuredClone(actions),
-          actions,
-          status: "draft",
-          createdBy: get().workspace.currentUserId,
-          createdAt: now,
-          updatedAt: now,
-          reviewedBy: null,
-          reviewedAt: null,
-          reviewNote: "",
-          appliedAt: null,
-          applyError: "",
-        }
-        set((state) => {
-          const merged = { ...state.proposals, [proposalId]: proposal }
-          const ids = Object.keys(merged).sort((a, b) =>
-            merged[a].createdAt.localeCompare(merged[b].createdAt),
-          )
-          const kept =
-            ids.length > PROPOSAL_LIMIT
-              ? ids.slice(-PROPOSAL_LIMIT)
-              : ids
-          return {
-            proposals: Object.fromEntries(kept.map((key) => [key, merged[key]])),
-          }
-        })
-        return proposal
-      },
-
-      updateProposal: (id, patch) => {
-        const proposal = get().proposals[id]
-        if (!proposal) return { ok: false, message: "Proposal 不存在" }
-        if (proposal.status === "applied" || proposal.status === "rejected") {
-          return { ok: false, message: "已结束的 Proposal 不能再次修改" }
-        }
-        set((state) => ({
-          proposals: {
-            ...state.proposals,
-            [id]: { ...proposal, ...patch, id, updatedAt: nowIso() },
-          },
-        }))
-        return { ok: true, message: "Proposal 已更新" }
-      },
-
-      saveProposal: (proposal) => {
-        if (!proposal?.id) return { ok: false, message: "Proposal 缺少 ID" }
-        set((state) => {
-          const merged = { ...state.proposals, [proposal.id]: structuredClone(proposal) }
-          const ids = Object.keys(merged).sort((a, b) =>
-            merged[a].createdAt.localeCompare(merged[b].createdAt),
-          )
-          const kept = ids.length > PROPOSAL_LIMIT ? ids.slice(-PROPOSAL_LIMIT) : ids
-          return {
-            proposals: Object.fromEntries(kept.map((key) => [key, merged[key]])),
-          }
-        })
-        return { ok: true, message: "Proposal 已保存" }
-      },
-
-      updateProposalValue: (id, actionId, value) => {
-        const proposal = get().proposals[id]
-        if (!proposal) return { ok: false, message: "Proposal 不存在" }
-        if (proposal.status === "applied" || proposal.status === "rejected") {
-          return { ok: false, message: "已结束的 Proposal 不能再次修改" }
-        }
-        const target = proposal.actions.find((action) => action.id === actionId)
-        if (!target) return { ok: false, message: "Proposal 动作不存在" }
-        if (target.status === "applied") {
-          return { ok: false, message: "已执行的动作不能修改" }
-        }
-        set((state) => ({
-          proposals: {
-            ...state.proposals,
-            [id]: {
-              ...proposal,
-              status: proposal.status === "draft" ? "reviewed" : proposal.status,
-              updatedAt: nowIso(),
-              actions: proposal.actions.map((action) =>
-                action.id === actionId
-                  ? { ...action, proposedValue: structuredClone(value), decision: "accepted" as const }
-                  : action,
-              ),
-            },
-          },
-        }))
-        return { ok: true, message: "已更新动作建议值" }
-      },
-
-      setProposalActionDecision: (id, actionId, decision) => {
-        const proposal = get().proposals[id]
-        if (!proposal) return { ok: false, message: "Proposal 不存在" }
-        if (proposal.status !== "draft" && proposal.status !== "reviewed") {
-          return { ok: false, message: "当前状态不可调整动作" }
-        }
-        const target = proposal.actions.find((action) => action.id === actionId)
-        if (!target) return { ok: false, message: "Proposal 动作不存在" }
-        if (target.status === "applied") {
-          return { ok: false, message: "已执行的动作不能改判" }
-        }
-        set((state) => ({
-          proposals: {
-            ...state.proposals,
-            [id]: {
-              ...proposal,
-              status: "reviewed",
-              updatedAt: nowIso(),
-              actions: proposal.actions.map((action) =>
-                action.id === actionId ? { ...action, decision } : action,
-              ),
-            },
-          },
-        }))
-        return { ok: true, message: "已更新动作决定" }
-      },
-
-      setProposalDecision: (proposalId, actionId, decision) =>
-        get().setProposalActionDecision(proposalId, actionId, decision),
-
-      rejectProposal: (id, note = "", reviewedBy) => {
-        const proposal = get().proposals[id]
-        if (!proposal) return { ok: false, message: "Proposal 不存在" }
-        if (proposal.status === "applied") {
-          return { ok: false, message: "已执行的 Proposal 不能驳回" }
-        }
-        const reviewer = reviewedBy ?? get().workspace.currentUserId
-        set((state) => ({
-          proposals: {
-            ...state.proposals,
-            [id]: {
-              ...proposal,
-              status: "rejected",
-              reviewNote: note,
-              reviewedBy: reviewer,
-              reviewedAt: nowIso(),
-              updatedAt: nowIso(),
-            },
-          },
-          history: appendHistory(state.history, [
-            historyItem("proposal", id, "reject", proposal.status, note, "agent", id),
-          ]),
-        }))
-        return { ok: true, message: "Proposal 已驳回" }
-      },
-
-      deleteProposal: (id) => {
-        if (!get().proposals[id]) return { ok: false, message: "Proposal 不存在" }
-        set((state) => {
-          const next = { ...state.proposals }
-          delete next[id]
-          return { proposals: next }
-        })
-        return { ok: true, message: "Proposal 已删除" }
-      },
-
-      applyProposal: (id, reviewedByOrNote) => {
-        const proposal = get().proposals[id]
-        if (!proposal) return { ok: false, message: "Proposal 不存在" }
-        if (proposal.status === "applied" || proposal.status === "rejected") {
-          return { ok: false, message: "该 Proposal 已结束" }
-        }
-        if (!proposal.actions.some((action) => action.decision === "accepted")) {
-          return { ok: false, message: "没有已采纳的动作可执行" }
-        }
-        const reviewer = reviewedByOrNote || get().workspace.currentUserId
-
-        const history: ChangeHistoryItem[] = []
-        const appliedIds = new Set<string>()
-        const resolvedIds = new Map<string, string>()
-        const results: ProposalAction[] = []
-        let applied = 0
-
-        const pending = proposal.actions.filter(
-          (action) => action.decision === "accepted" && action.status !== "applied",
-        )
-        const ordered: ProposalAction[] = []
-        const remaining = [...pending]
-        while (remaining.length) {
-          const index = remaining.findIndex((item) =>
-            item.dependsOnActionIds.every(
-              (dep) => !remaining.some((candidate) => candidate.id === dep),
-            ),
-          )
-          if (index < 0) {
-            remaining.forEach((item) =>
-              results.push({ ...item, status: "stale", error: "动作依赖形成环路" }),
-            )
-            break
-          }
-          ordered.push(remaining.splice(index, 1)[0])
-        }
-        const cyclic = new Set(results.map((action) => action.id))
-
-        for (const action of proposal.actions) {
-          if (action.decision !== "accepted") {
-            results.push({ ...action })
-            continue
-          }
-          if (cyclic.has(action.id)) continue
-          if (action.status === "applied") {
-            appliedIds.add(action.id)
-            if (action.resultTargetId) resolvedIds.set(action.id, action.resultTargetId)
-            applied += 1
-            results.push({ ...action })
-            continue
-          }
-        }
-
-        for (const action of ordered) {
-          const unmet = action.dependsOnActionIds.find((dep) => !appliedIds.has(dep))
-          if (unmet) {
-            results.push({ ...action, status: "stale", error: "依赖的动作未成功执行" })
-            continue
-          }
-          const resolvedAction: ProposalAction = {
-            ...action,
-            targetId: action.targetId
-              ? (resolvedIds.get(action.targetId) ?? action.targetId)
-              : action.targetId,
-            proposedValue: resolveValueIds(action.proposedValue, resolvedIds),
-            preconditions: action.preconditions.map((condition) => ({
-              ...condition,
-              targetId: resolvedIds.get(condition.targetId) ?? condition.targetId,
-            })),
-          }
-
-          const current = get()
-          const mismatch = resolvedAction.preconditions.find(
-            (condition) =>
-              readProposalField(
-                current,
-                condition.targetType,
-                condition.targetId,
-                condition.field,
-              ) !== condition.expected,
-          )
-          if (mismatch) {
-            results.push({
-              ...action,
-              status: "stale",
-              error: `执行前数据已变化：${mismatch.targetId}.${mismatch.field}`,
-            })
-            continue
-          }
-
-          const outcome = executeProposalAction(current, resolvedAction)
-          if (outcome.ok) {
-            const resultId =
-              outcome.result && typeof outcome.result === "object"
-                ? String((outcome.result as Record<string, unknown>).id ?? "")
-                : ""
-            appliedIds.add(action.id)
-            if (resultId) resolvedIds.set(action.id, resultId)
-            applied += 1
-            history.push(
-              historyItem(
-                proposalObjectType(action.targetType),
-                action.targetId ?? proposal.targetId,
-                `agent:${action.actionType}`,
-                action.beforeValue,
-                outcome.result,
-                "agent",
-                id,
-                action.id,
-              ),
-            )
-            results.push({
-              ...action,
-              status: "applied",
-              resultTargetId: resultId || action.resultTargetId,
-              appliedAt: nowIso(),
-              error: "",
-            })
-          } else {
-            results.push({ ...action, status: "failed", error: outcome.message })
-          }
-        }
-
-        const failed = results.filter(
-          (action) => action.decision === "accepted" && action.status === "failed",
-        ).length
-        const stale = results.filter(
-          (action) => action.decision === "accepted" && action.status === "stale",
-        ).length
-        const status: AgentProposalStatus =
-          applied === 0 && failed + stale > 0
-            ? "failed"
-            : failed + stale > 0
-              ? "partially_applied"
-              : "applied"
-
-        set((state) => ({
-          proposals: {
-            ...state.proposals,
-            [id]: {
-              ...proposal,
-              actions: results,
-              status,
-              reviewedBy: reviewer,
-              reviewedAt: nowIso(),
-              appliedAt: nowIso(),
-              updatedAt: nowIso(),
-              applyError: failed || stale ? `失败 ${failed} 项，失效 ${stale} 项` : "",
-            },
-          },
-          history: appendHistory(state.history, history),
-        }))
-
-        return {
-          ok: failed === 0 && stale === 0,
-          message: `已执行 ${applied} 项${failed ? `，失败 ${failed} 项` : ""}${stale ? `，失效 ${stale} 项` : ""}`,
-        }
-      },
-
       exportProjectJson: () => JSON.stringify(dataSnapshot(get()), null, 2),
+
       importProjectJson: (json) => {
         try {
           const parsed = JSON.parse(json) as ProjectDataState
@@ -5218,167 +5325,4 @@ export const useProjectStore = create<ProjectStore>()(
 
 export function resetProjectStoreForTests() {
   useProjectStore.setState({ ...createInitialProjectState() })
-}
-
-/**
- * 把一条已采纳的 ProposalAction 翻译成现有的 Project Store 动作。
- * 这里只做“执行”，不做权限判断和冲突校验，冲突由 applyProposal 的 preconditions 处理。
- */
-function executeProposalAction(
-  state: ProjectDataState,
-  action: ProposalAction,
-): { ok: boolean; message: string; result: unknown } {
-  const store = useProjectStore.getState()
-  const value = (action.proposedValue ?? {}) as Record<string, unknown>
-  const asString = (key: string) =>
-    typeof value[key] === "string" ? (value[key] as string) : ""
-  const asNumber = (key: string) =>
-    typeof value[key] === "number" ? (value[key] as number) : undefined
-
-  switch (action.actionType) {
-    case "CREATE_TASK": {
-      const storyId = asString("storyId") || action.targetId || ""
-      if (!state.stories[storyId]) return proposalActionResult(false, "目标 Story 不存在")
-      const created = store.createTask(storyId, {
-        title: asString("title") || "AI 建议任务",
-        type: (asString("type") || "frontend") as TaskEntity["type"],
-        assigneeId: asString("assigneeId") || state.workspace.currentUserId,
-        estimate: asNumber("estimate") ?? 4,
-        ...(asString("startDate") ? { startDate: asString("startDate") } : {}),
-        ...(asString("endDate") ? { endDate: asString("endDate") } : {}),
-      })
-      return proposalActionResult(true, "任务已创建", { id: created.id, title: created.title })
-    }
-    case "CREATE_SUBTASK": {
-      const rawTaskId = asString("taskId") || action.targetId || ""
-      const taskId = resolvedActionTargetId(state, rawTaskId, action)
-      if (!state.tasks[taskId]) return proposalActionResult(false, "目标任务不存在")
-      const created = store.addSubtask(taskId, asString("title") || "AI 建议子任务")
-      const patch: Partial<SubtaskEntity> = {}
-      if (asString("assigneeId")) patch.assigneeId = asString("assigneeId")
-      if (asNumber("estimate") !== undefined) patch.estimate = asNumber("estimate")
-      if (asString("startDate")) patch.startDate = asString("startDate")
-      if (asString("endDate")) patch.endDate = asString("endDate")
-      if (Object.keys(patch).length) store.updateSubtask(created.id, patch, "agent")
-      return proposalActionResult(true, "子任务已创建", { id: created.id, title: created.title })
-    }
-    case "CREATE_RISK": {
-      const risk = store.createRisk({
-        title: asString("title") || "AI 识别风险",
-        targetType: (asString("targetType") || "task") as RiskEntity["targetType"],
-        targetId: asString("targetId") || action.targetId || "",
-        level: (asString("level") || "medium") as RiskEntity["level"],
-        description: asString("description") || action.reason,
-        impact: asString("impact"),
-        mitigation: asString("mitigation"),
-        ownerId: asString("ownerId") || state.workspace.currentUserId,
-        status: "open",
-      })
-      return proposalActionResult(true, "风险已登记", { id: risk.id, title: risk.title })
-    }
-    case "CREATE_DISCUSSION": {
-      const targetType = (asString("targetType") ||
-        (action.targetType === "story" || action.targetType === "task"
-          ? action.targetType
-          : "project")) as DiscussionMessageEntity["targetType"]
-      const targetId = asString("targetId") || action.targetId || state.project.id
-      const result = store.addDiscussion(
-        targetType,
-        targetId,
-        asString("content") || action.reason,
-      )
-      return proposalActionResult(result.ok, result.message, { targetType, targetId })
-    }
-    case "BLOCK_TASK": {
-      const taskId = asString("taskId") || action.targetId || ""
-      const result = store.addTaskBlockReason(
-        taskId,
-        asString("message") || action.reason,
-        asString("relatedTaskId") || null,
-      )
-      return proposalActionResult(result.ok, result.message, { taskId })
-    }
-    case "ADD_DEPENDENCY": {
-      const sourceTaskId = asString("sourceTaskId")
-      const targetTaskId = asString("targetTaskId")
-      const before = new Set(Object.keys(state.dependencies))
-      const result = store.addDependency(sourceTaskId, targetTaskId)
-      if (!result.ok) return proposalActionResult(false, result.message)
-      const created = Object.keys(useProjectStore.getState().dependencies).find(
-        (dependencyId) => !before.has(dependencyId),
-      )
-      return proposalActionResult(true, result.message, {
-        id: created ?? null,
-        sourceTaskId,
-        targetTaskId,
-      })
-    }
-    case "REMOVE_DEPENDENCY": {
-      const dependencyId = asString("dependencyId") || action.targetId || ""
-      const result = store.deleteDependency(dependencyId)
-      return proposalActionResult(result.ok, result.message, { id: dependencyId })
-    }
-    case "UPDATE_TASK":
-    case "UPDATE_DEADLINE":
-    case "CHANGE_ASSIGNEE": {
-      const patch = (action.proposedValue ?? {}) as Record<string, unknown>
-      const taskId = action.targetId ?? ""
-      const result = store.updateTask(
-        taskId,
-        {
-          ...(typeof patch.title === "string" ? { title: patch.title } : {}),
-          ...(typeof patch.assigneeId === "string" ? { assigneeId: patch.assigneeId } : {}),
-          ...(typeof patch.estimate === "number" ? { estimate: patch.estimate } : {}),
-          ...(typeof patch.startDate === "string" ? { startDate: patch.startDate } : {}),
-          ...(typeof patch.endDate === "string" ? { endDate: patch.endDate } : {}),
-          ...(typeof patch.status === "string" ? { status: patch.status } : {}),
-          ...(typeof patch.progress === "number" ? { progress: patch.progress } : {}),
-        } as Partial<TaskEntity>,
-        "agent",
-      )
-      return proposalActionResult(result.ok, result.message, { id: taskId })
-    }
-    case "UPDATE_SUBTASK": {
-      const patch = (action.proposedValue ?? {}) as Record<string, unknown>
-      const subtaskId = action.targetId ?? ""
-      const result = store.updateSubtask(
-        subtaskId,
-        {
-          ...(typeof patch.title === "string" ? { title: patch.title } : {}),
-          ...(typeof patch.assigneeId === "string" ? { assigneeId: patch.assigneeId } : {}),
-          ...(typeof patch.estimate === "number" ? { estimate: patch.estimate } : {}),
-          ...(typeof patch.startDate === "string" ? { startDate: patch.startDate } : {}),
-          ...(typeof patch.endDate === "string" ? { endDate: patch.endDate } : {}),
-          ...(typeof patch.status === "string" ? { status: patch.status } : {}),
-          ...(typeof patch.progress === "number" ? { progress: patch.progress } : {}),
-        } as Partial<SubtaskEntity>,
-        "agent",
-      )
-      return proposalActionResult(result.ok, result.message, { id: subtaskId })
-    }
-    case "UPDATE_STORY":
-    case "CHANGE_PRIORITY": {
-      const patch = (action.proposedValue ?? {}) as Record<string, unknown>
-      const storyId = action.targetId ?? ""
-      const result = store.updateStory(
-        storyId,
-        {
-          ...(typeof patch.title === "string" ? { title: patch.title } : {}),
-          ...(typeof patch.priority === "string" ? { priority: patch.priority } : {}),
-          ...(typeof patch.dueDate === "string" ? { dueDate: patch.dueDate } : {}),
-          ...(typeof patch.storyPoints === "number" ? { storyPoints: patch.storyPoints } : {}),
-        } as Partial<StoryEntity>,
-        "agent",
-      )
-      return proposalActionResult(result.ok, result.message, { id: storyId })
-    }
-    case "UPDATE_RISK": {
-      const patch = (action.proposedValue ?? {}) as Record<string, unknown>
-      const riskId = action.targetId ?? ""
-      const result = store.updateRisk(riskId, patch as Partial<RiskEntity>)
-      return proposalActionResult(result.ok, result.message, { id: riskId })
-    }
-    default:
-      return proposalActionResult(false, "暂不支持的动作用类型")
-  }
 }

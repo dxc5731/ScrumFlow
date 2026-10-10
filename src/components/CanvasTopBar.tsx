@@ -325,7 +325,7 @@ export default function CanvasTopBar() {
                           className="primary-button"
                           disabled={finished}
                           onClick={() => {
-                            const result = applyProposal(proposal.id, workspace.currentUserId)
+                            const result = applyProposal(proposal.id)
                             notify(result.message, result.ok ? "success" : "error")
                           }}
                         >
@@ -335,7 +335,7 @@ export default function CanvasTopBar() {
                           className="secondary-button"
                           disabled={finished}
                           onClick={() => {
-                            rejectProposal(proposal.id, "在待确认列表中忽略", workspace.currentUserId)
+                            rejectProposal(proposal.id, "在待确认列表中忽略")
                             notify("建议已忽略", "info")
                           }}
                         >
