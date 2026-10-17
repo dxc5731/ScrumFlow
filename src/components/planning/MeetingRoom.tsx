@@ -5,7 +5,7 @@ import {
   Activity, ArrowRight, Bot, CalendarDays, Check, CheckCircle2, ChevronDown,
   PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen,
   ClipboardList, Clock3, FileStack, Flag, GitBranch, ListTree, MessageCircle,
-  MoreHorizontal, Send, ShieldAlert, Sparkles, Square, Users, WandSparkles, X,
+  Mic, MicOff, MoreHorizontal, Send, ShieldAlert, Sparkles, Square, Users, WandSparkles, X,
 } from "lucide-react"
 import {
   agentName, meetingAgents, parseAgentMention,
@@ -30,6 +30,7 @@ import { showcaseV2Marker } from "../../agents/meetingShowcaseV2"
 import { focusedMeetingSession, meetingEntities, memoryFor, normalizedMeetingMemory, type EntityReference } from "../../agents/meetingContext"
 import { describeHypothesisImpact } from "../../agents/meetingMinutes"
 import { useProjectStore } from "../../store/projectStore"
+import { useSpeechTranscription } from "../../hooks/useSpeechTranscription"
 import type { AgentProposal, AgentType, MeetingMessage, ProposalAction, ProjectDataState } from "../../types"
 import { MemberAvatar } from "./ui"
 import PlanningMeetingDialog from "./PlanningMeetingDialog"
@@ -410,6 +411,16 @@ export default function MeetingRoom({ initialSessionId, onClose, initialHistoryO
   }, [showMinutes, showMaterials])
   useEffect(() => { timelineEnd.current?.scrollIntoView({ block: "end", behavior: "smooth" }) }, [sessionId, messages.length, busyAgent])
 
+  // 语音转写：每句识别结果直接记为当前发言人的会议发言，不触发 AI 助手回复，结束会议时统一总结
+  const speech = useSpeechTranscription((text) => {
+    const current = useProjectStore.getState()
+    if (current.meetingSessions[sessionId]?.status !== "active") return
+    try { current.addMeetingMessage(sessionId, { senderType: "user", senderId: speakerId, content: text }) }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "语音记录失败") }
+  })
+  const { listening, stop: stopListening } = speech
+  useEffect(() => { if (!canInteract && listening) stopListening() }, [canInteract, listening, stopListening])
+
   useEffect(() => {
     if (!focusedProposalId || !rightOpen || showMinutes || showMaterials) return
     document.getElementById(`meeting-decision-${focusedProposalId}`)?.scrollIntoView({ block: "start", behavior: "smooth" })
@@ -611,7 +622,9 @@ export default function MeetingRoom({ initialSessionId, onClose, initialHistoryO
             const status = item.type === "task" ? state.tasks[item.id]?.status : item.type === "sprint" ? state.sprints[item.id]?.status : item.type === "risk" ? state.risks[item.id]?.status : state.stories[item.id]?.deliveryStatus
             return <button key={`${item.type}-${item.id}`} type="button" role="option" aria-selected={index === pickerIndex} className={index === pickerIndex ? "is-active" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseEntity(item)}><span className="meeting-entity-icon">#</span><span><strong>{item.id.toUpperCase()} · {item.label}</strong><small>{({ story: "Story", task: "任务", sprint: "Sprint", risk: "风险" } as const)[item.type]} · {entityStatusLabels[status ?? ""] ?? "待确认"}</small></span></button>
           })}</div>}
-          <div className="meeting-composer-top"><span><Sparkles size={14} /> @ 邀请助手或成员 · # 引用项目工作</span><label>以 <select aria-label="发言成员" value={speakerId} onChange={(event) => setSpeakerId(event.target.value)}>{Object.values(state.members).map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select> 发言</label></div>
+          {speech.error && <div className="meeting-compose-error" role="alert">{speech.error}<button type="button" onClick={speech.clearError} title="关闭提示"><X size={13} /></button></div>}
+          {listening && <div className="meeting-voice-caption" aria-live="polite"><i /><strong>{state.members[speakerId]?.name ?? "发言人"}</strong><span>{speech.interim || "正在聆听，说话内容会自动记入会议…"}</span></div>}
+          <div className="meeting-composer-top"><span><Sparkles size={14} /> @ 邀请助手或成员 · # 引用项目工作</span><div className="meeting-composer-tools">{speech.supported && <button type="button" className={`meeting-voice-toggle ${listening ? "is-active" : ""}`} aria-pressed={listening} title={listening ? "停止语音记录" : "开始语音记录：说话内容自动转为会议发言"} onClick={() => listening ? speech.stop() : speech.start()}>{listening ? <MicOff size={13} /> : <Mic size={13} />}{listening ? "停止语音" : "语音发言"}</button>}<label>以 <select aria-label="发言成员" value={speakerId} onChange={(event) => setSpeakerId(event.target.value)}>{Object.values(state.members).map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select> 发言</label></div></div>
           <div className="meeting-composer-field"><textarea ref={composerRef} aria-label="会议消息" placeholder={session.status === "active" ? "随时 @ 助手或成员；@材料整理 可生成图表、Word 和 Excel…" : "会议已结束，可查看历史记录"} disabled={!canInteract || working} value={draft} onSelect={(event) => setCursor(event.currentTarget.selectionStart)} onChange={(event) => { setDraft(event.target.value); setCursor(event.target.selectionStart); setPickerDismissed(false); setPickerIndex(0) }} onKeyDown={(event) => {
             if (event.nativeEvent.isComposing || event.keyCode === 229) return
             const options = pickerOpen ? pickerOptions : entityPickerOpen ? entityOptions : []
