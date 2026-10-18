@@ -13,6 +13,8 @@ import { recommendMeetingMaterials } from "./materialRecommendations"
 import { readableMeeting } from "./meetingPresentation"
 import { latestMeetingFiles, materialFileId, materialIdentityScope, type MeetingArtifactMetadata } from "./materialIdentity"
 import { recordSkippedModelCall } from "./meetingTelemetry"
+import { scrumMeetingReport } from "./meetingReport"
+import { meetingOutcomeState } from "./meetingOutcomes"
 
 export function materialMetadata(asset: DesignAssetEntity) {
   try { return JSON.parse(asset.sourceText) as MaterialArtifact & { _meeting?: MeetingArtifactMetadata } }
@@ -20,8 +22,14 @@ export function materialMetadata(asset: DesignAssetEntity) {
 }
 
 function fingerprint(state: ProjectDataState, session: MeetingSession, context: MeetingContext, key: string) {
+  if (key === "meeting-report") {
+    const source = scrumMeetingReport(state, session)
+    let hash = 2166136261
+    for (let i = 0; i < source.length; i++) hash = Math.imul(hash ^ source.charCodeAt(i), 16777619)
+    return String(hash >>> 0)
+  }
   const source = JSON.stringify({ key, narrative: ["minutes", "teacher-overview"].includes(key) ? session.narrative?.text : undefined, ...(["minutes", "teacher-overview", "wbs", "gantt"].includes(key) ? { formatVersion: key === "wbs" ? 3 : 2 } : {}), focus: context.focus, project: state.project, stories: state.stories, tasks: state.tasks,
-    subtasks: state.subtasks, dependencies: state.dependencies, risks: state.risks, members: state.members, sprints: state.sprints,
+    subtasks: state.subtasks, dependencies: state.dependencies, risks: state.risks, members: state.members, sprints: state.sprints, exportLayoutRevision: 3,
     plans: session.memory?.workingState?.planRevisions, proposals: session.proposalIds.map(id => state.proposals[id]), facts: session.facts,
     topics: session.topics?.filter(topic => topic.type !== "general") })
   let hash = 2166136261
@@ -40,7 +48,9 @@ async function saveFiles(state: ProjectDataState, context: MeetingContext, files
     for (const file of files) { const key = createBlobKey(); await putBlob(key, file.blob); saved.push({ key, file }) }
     const store = useProjectStore.getState()
     if (store.project.id !== state.project.id) throw new Error("生成期间项目已切换，请在原项目重新生成材料")
-    const links = [{ targetType: "project" as const, targetId: state.project.id },
+    const demo = state.meetingSessions[context.meetingId]?.demo
+    if (demo && store.meetingSessions[context.meetingId]?.demo?.sourceCapturedAt !== demo.sourceCapturedAt) throw new Error("生成期间演示快照已切换，请重新打开演示会议")
+    const links = state.meetingSessions[context.meetingId]?.demo ? [] : [{ targetType: "project" as const, targetId: state.project.id },
       ...(context.focusSprintId ? [{ targetType: "sprint" as const, targetId: context.focusSprintId }] : []),
       ...context.focusStoryIds.filter(id => store.stories[id]).map(id => ({ targetType: "story" as const, targetId: id }))]
     return saved.map(({ key, file }) => {
@@ -78,6 +88,8 @@ export async function renameMeetingMaterial(state: ProjectDataState, ids: string
 }
 
 export async function generateMeetingMaterials(state: ProjectDataState, session: MeetingSession, context: MeetingContext, question: string): Promise<AgentAnswer> {
+  state = meetingOutcomeState(state, session)
+  if (session.demo && !standardMaterialKind(question) && !/ZIP|打包|材料包/i.test(question)) throw new Error("演示记录仅支持本地标准成果，无法发起实时模型请求。")
   if (session.presentationMode === "defense" && ["minutes", "teacher"].includes(standardMaterialKind(question) ?? "")) {
     const { ensureMeetingNarrative } = await import("./meetingNarrative")
     await ensureMeetingNarrative(session.id)
@@ -141,7 +153,7 @@ export async function generateMeetingMaterials(state: ProjectDataState, session:
     recordSkippedModelCall("materials", question, "reuse_existing_asset")
     return answer("这份成果已经准备好了，我把它拿过来，直接预览或下载即可。", cached.map(asset => asset.id))
   }
-  if (kind === "gantt" || kind === "storymap") {
+  if ((kind === "gantt" || kind === "storymap") && !session.demo) {
     const { captureGanttView, captureStoryMapView, planningImagePdf } = await import("../utils/exportImage")
     const title = kind === "gantt" ? `${state.sprints[context.focusSprintId ?? ""]?.name ?? "当前 Sprint"} 彩色甘特图` : "项目用户故事地图"
     const png = kind === "gantt" ? await captureGanttView({ sprintId: context.focusSprintId ?? state.workspace.selectedSprintId, fullScope: true }) : await captureStoryMapView()

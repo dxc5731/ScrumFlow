@@ -1,0 +1,101 @@
+.meeting-insights { color: #344158; font-size: 13px; }
+.insights-heading, .insights-actions, .insights-section-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.meeting-insights h2 { margin: 0 0 6px; color: #202a3e; font-size: 24px; }
+.meeting-insights h4 { margin: 12px 0 6px; font-size: 13px; color: #344158; }
+.meeting-insights p { line-height: 1.75; overflow-wrap: anywhere; }
+.insights-heading p { margin: 0; color: #59677c; }
+.insights-actions button { display: inline-flex; align-items: center; gap: 7px; border: 1px solid #dce0ec; border-radius: 7px; padding: 9px 12px; background: #fff; color: #51479b; font-weight: 600; }
+.insights-actions .insights-primary { color: #fff; background: #6457c5; border-color: #6457c5; }
+.meeting-insights button:hover:not(:disabled) { filter: brightness(.94); }
+.meeting-insights button:focus-visible, .meeting-insights summary:focus-visible { outline: 2px solid #7564cf; outline-offset: 3px; }
+.meeting-insights button:disabled { opacity: .55; cursor: wait; }
+.insights-overview { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); margin: 24px 0 12px; border: 1px solid #e4e5ee; border-radius: 12px; background: #fff; }
+.insights-overview > div { padding: 20px; min-width: 0; }
+.insights-overview > div + div { border-left: 1px solid #ebedf3; }
+.insights-overview span, .insights-overview small { display: block; color: #5b687b; font-size: 12px; }
+.insights-overview strong { display: block; margin: 8px 0; color: #302951; font-size: 30px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.insights-overview em { font-size: 15px; font-weight: 500; font-style: normal; margin-left: 5px; color: #665d7d; }
+.insights-context { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 24px; color: #5d677b; font-size: 11px; }
+.insights-demo { color: #78591a; }
+.insights-charts { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 16px; align-items: stretch; }
+.meeting-insights .insights-panel { padding: 20px; border: 1px solid #e3e6ef; border-radius: 12px; background: #fff; min-width: 0; margin-bottom: 20px; }
+.meeting-insights .insights-panel h3, .meeting-insights .insights-retrospective h3, .insights-materials > h3 { font-size: 15px; display: flex; gap: 7px; align-items: center; }
+.insights-caption, .insights-footnote, .insights-panel small, .insights-retrospective > small { color: #5c697d; font-size: 11px; }
+.insights-caption { margin: 0 0 18px; }
+.insights-agenda { list-style: none; padding: 0; margin: 0; }
+.insights-agenda li { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+.insights-agenda li > span { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #f0f1f5; color: #616c7d; font-size: 11px; }
+.insights-agenda .is-progressed > span { color: #6755b2; background: #f0ebfb; }
+.insights-agenda li > div { display: grid; gap: 4px; flex: 1; }
+.insights-agenda li button { color: #6555b0; padding: 6px; }
+.insights-agenda-track { height: 5px; border-radius: 4px; background: #efedf5; overflow: hidden; margin-top: 16px; }
+.insights-agenda-track span { display: block; height: 100%; background: #8573c8; }
+.insights-member-chart { display: grid; gap: 14px; min-height: 100px; }
+.insights-member-row { display: grid; grid-template-columns: 48px minmax(0,1fr) 24px; align-items: center; gap: 4px 8px; }
+.insights-member-row > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.insights-member-row > small { grid-column: 2/4; font-size: 10px; }
+.insights-member-row > strong { text-align: right; font-variant-numeric: tabular-nums; }
+.insights-member-track { height: 12px; background: #f4f2f8; border-radius: 3px; overflow: hidden; }
+.insights-member-track > div { display: flex; height: 100%; overflow: hidden; border-radius: 3px; }
+.insights-bar--text { background: #8b77ce; }
+.insights-bar--voice { background: #85b7b2; }
+.insights-bar--unknown { background: #b7bdc9; }
+.insights-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 18px; color: #526077; font-size: 10px; }
+.insights-legend span { display: inline-flex; gap: 5px; align-items: center; }
+.insights-legend i, .insights-status-list i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.insights-distribution { display: flex; height: 18px; border-radius: 4px; overflow: hidden; background: #f0edf5; margin: 24px 0 18px; }
+.insights-status--executed { background: #72a69a; }
+.insights-status--pending { background: #9d87d3; }
+.insights-status--accepted { background: #d3b471; }
+.insights-status--rejected { background: #c7a2a9; }
+.insights-status--reused { background: #9da9bc; }
+.insights-status-list { margin: 0; }
+.insights-status-list > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 9px 0; }
+.insights-status-list dt { display: flex; align-items: center; gap: 7px; color: #4d5a70; font-size: 12px; }
+.insights-status-list dd { margin: 0; font-weight: 650; }
+.insights-detail-grid { display: grid; grid-template-columns: 1.08fr 1fr; gap: 20px; align-items: start; }
+.insights-feedback { margin: 10px 0 18px; padding: 9px 10px; border-radius: 6px; background: #f6f3fc; color: #635089; font-size: 11px; }
+.insights-timeline { list-style: none; padding: 0; margin: 0; }
+.insights-timeline li { display: grid; grid-template-columns: 58px minmax(0,1fr); gap: 12px; padding: 0 0 20px; }
+.insights-timeline time { color: #677286; font-size: 11px; font-variant-numeric: tabular-nums; padding-top: 3px; }
+.insights-timeline li > div { border-bottom: 1px solid #edf0f5; padding-bottom: 14px; }
+.insights-timeline li:last-child > div { border: 0; padding-bottom: 0; }
+.insights-timeline p { margin: 7px 0; color: #4f5b6d; font-size: 12px; }
+.insights-trace { display: inline-flex; align-items: center; gap: 4px; color: #6551ac; font-size: 12px; font-weight: 650; text-align: left; }
+.insights-source-links { display: flex; flex-wrap: wrap; gap: 6px; font-size: 10px; color: #647085; }
+.insights-source-links button { color: #6651ac; text-decoration: underline; text-underline-offset: 3px; }
+.insights-action { padding: 18px 0; border-bottom: 1px solid #e8ebf2; }
+.insights-action:first-of-type { padding-top: 12px; }
+.insights-action > div:first-child { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.insights-action-status { color: #253c38; border-radius: 4px; padding: 4px 7px; font-size: 11px; font-weight: 600; }
+.insights-action-status.insights-status--executed { background: #e0f0ea; color: #285c4e; }
+.insights-action-status.insights-status--pending { background: #eee8f8; color: #614795; }
+.insights-action-status.insights-status--accepted { background: #faf0d9; color: #745313; }
+.insights-action-status.insights-status--rejected { background: #f7e8eb; color: #854b58; }
+.insights-action-status.insights-status--reused { background: #e8edf4; color: #4e5b70; }
+.insights-action p { margin: 8px 0; font-size: 12px; }
+.insights-action details { margin-top: 12px; }
+.insights-action summary { cursor: pointer; color: #5e4d99; font-size: 12px; }
+.insights-audit { margin-top: 10px; padding: 10px; background: #f7f8fb; border-radius: 6px; overflow-wrap: anywhere; }
+.insights-audit strong { font-size: 11px; }
+.insights-issues { margin-top: 20px; }
+.insights-issues p { border-bottom: 1px solid #edf0f5; padding-bottom: 10px; font-size: 12px; }
+.insights-issues strong { color: #5e4d99; font-weight: 600; }
+.insights-issues small { display: block; margin-top: 4px; }
+.meeting-insights .insights-retrospective { padding: 24px; background: #f5f2fb; border-radius: 12px; margin-bottom: 28px; }
+.insights-retrospective > p { max-width: 85ch; font-size: 14px; }
+.insights-retro-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 18px; }
+.insights-retro-grid p { color: #514b65; font-size: 12px; }
+.insights-empty { color: #657083; padding: 20px 0; }
+.meeting-outcome-tabs { display: flex; gap: 8px; margin: 18px 0 24px; }
+.meeting-outcome-tabs button { color: #5a6075; border-radius: 6px; padding: 9px 14px; font-weight: 600; font-size: 13px; }
+.meeting-outcome-tabs button[aria-pressed=true] { color: #5f4ca5; background: #eee9f8; }
+.meeting-minutes-view.meeting-minutes-readable:has(.meeting-insights) { padding: 24px max(28px, calc((100vw - 1240px) / 2)) 60px; }
+.meeting-minutes-view:has(.meeting-insights) .meeting-minutes-header { align-items: center; padding-bottom: 8px; border-bottom: 0; }
+.meeting-minutes-view:has(.meeting-insights) .meeting-minutes-header > div { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+.meeting-minutes-view:has(.meeting-insights) .meeting-minutes-header h2 { margin: 0; font-size: 19px; }
+.meeting-minutes-view:has(.meeting-insights) .meeting-minutes-header p { margin: 0; }
+.meeting-minutes-view:has(.meeting-insights) .meeting-outcome-tabs { margin: 8px 0 20px; }
+@media (max-width: 1000px) { .insights-overview > div { padding: 16px 12px; } .insights-overview strong { font-size: 25px; } .insights-charts { grid-template-columns: 1fr 1fr; } .insights-charts > section:last-child { grid-column: 1/-1; } .insights-detail-grid { grid-template-columns: 1fr; } }
+@media (max-width: 650px) { .insights-overview { grid-template-columns: repeat(2,minmax(0,1fr)); } .insights-overview > div + div { border-left: none; } .insights-overview > div { border-bottom: 1px solid #ebedf3; } .insights-charts, .insights-retro-grid { grid-template-columns: 1fr; } .insights-charts > section:last-child { grid-column: auto; } .insights-heading { align-items: flex-start; } .insights-actions { gap: 8px; } .insights-actions button { padding: 8px; font-size: 12px; } .meeting-minutes-view.meeting-minutes-readable:has(.meeting-insights) { padding: 18px 14px 40px; } .meeting-insights .insights-panel, .meeting-insights .insights-retrospective { padding: 16px; } }
+@media (prefers-reduced-motion: reduce) { .meeting-insights * { scroll-behavior: auto; } }

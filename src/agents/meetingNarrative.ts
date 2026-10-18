@@ -5,34 +5,41 @@ import { generateMeetingMinutes } from "./meetingMinutes"
 import { getMeetingLlmTelemetry } from "./meetingTelemetry"
 import { agentName } from "./meetingConversation"
 import { buildExecutionSummary } from "./meetingExecutionSummary"
+import { meetingInsights, meetingOutcomeState } from "./meetingOutcomes"
 
 const inFlight = new Map<string, Promise<void>>()
 // Material-only messages do not invalidate a summary of the meeting's decisions.
 export function narrativeFingerprint(state: ProjectDataState, session: MeetingSession) {
+  state = meetingOutcomeState(state, session)
   const appliedHistory = state.history.filter(item => item.proposalId && session.proposalIds.includes(item.proposalId))
   const historyIds = new Set(appliedHistory.map(item => item.objectId))
   return JSON.stringify([session.messageIds.filter(id => { const m = state.meetingMessages[id]; return m && m.senderId !== "material_organizer" && !m.handoffTo && !(m.senderType === "user" && /@材料整理|生成.*(?:纪要|图|Excel|材料|WBS)|整理.*纪要|老师.*(?:汇报|材料)|打包|标题.*改/.test(m.content)) }),
     session.proposalIds.map(id => state.proposals[id]?.actions.map(a => [a.id, a.status, a.decision, a.proposedValue])),
-    state.history.filter(item => historyIds.has(item.objectId)).map(item => [item.id, item.field])])
+    appliedHistory.filter(item => historyIds.has(item.objectId)).map(item => [item.id, item.field])])
 }
 
 export async function ensureMeetingNarrative(meetingId: string): Promise<void> {
-  const current = useProjectStore.getState(), session = current.meetingSessions[meetingId]
+  const live = useProjectStore.getState(), session = live.meetingSessions[meetingId]
   if (!session) return
+  const current = meetingOutcomeState(live, session)
   const fingerprint = narrativeFingerprint(current, session)
   if (session.narrative?.fingerprint === fingerprint) return
   if (inFlight.has(meetingId)) return inFlight.get(meetingId)
   const work = (async () => {
+    const outcomes = meetingInsights(current, session)
+    const fallback = () => useProjectStore.getState().setMeetingPresentation(meetingId, { narrative: {
+      text: outcomes.summary, references: [], fingerprint, generatedAt: new Date().toISOString(), model: "facts-template" } })
     const messages = session.messageIds.map(id => current.meetingMessages[id]).filter(m => m && m.senderType !== "system" && !m.handoffTo)
-    if (messages.length < 3) throw new Error("再讨论几个具体问题后，就能整理完整摘要。")
-    const proposals = session.proposalIds.map(id => current.proposals[id]).filter(Boolean)
-    const verifiedActions = proposals.flatMap(proposal => proposal.actions.filter(action => action.status === "applied" && action.decision !== "rejected").map(action => {
+    if (messages.length < 3 || !messages.some(m => m.senderType === "user")) { fallback(); return }
+    const proposals = outcomes.proposals
+    const verifiedActions = proposals.flatMap(proposal => proposal.actions.filter(action => outcomes.actions.some(a => a.actionId === action.id && a.executed)).map(action => {
       const actual = current.subtasks[action.resultTargetId ?? action.targetId] ?? current.tasks[action.resultTargetId ?? action.targetId]
       const parent = actual && "taskId" in actual ? current.tasks[actual.taskId] : undefined
       return { title: actual?.title, assignee: current.members[actual?.assigneeId ?? ""]?.name, estimate: actual?.estimate,
         parent: parent && { title: parent.title, assignee: current.members[parent.assigneeId]?.name } }
     }))
-    const content = await requestMeetingModel("meeting_summary", {
+    let content: string | null = null
+    try { content = await requestMeetingModel("meeting_summary", {
       meetingId, question: "请完整阅读这场会议，整理自然、可信的会议摘要", title: session.title,
       project: { name: current.project.name, goal: current.project.goal },
       // One complete read at close; ordinary turns continue to use six relevant messages.
@@ -40,10 +47,12 @@ export async function ensureMeetingNarrative(meetingId: string): Promise<void> {
         identity: m.senderType, content: m.content })),
       verifiedMinutes: generateMeetingMinutes(current, session),
       verifiedActions, reviewedExecution: buildExecutionSummary(current, proposals),
-    }, true)
+      verifiedOutcomes: { summary: outcomes.summary, improvements: outcomes.improvements,
+        actions: outcomes.actions.map(a => ({ title: a.title, review: a.decision, execution: a.label, evidenceIds: a.history.map(h => h.id) })) },
+    }, true) } catch { /* Facts remain available when the model is offline. */ }
     const parsed = parseModelObject(content ?? "")
     if (typeof parsed?.summary !== "string" || parsed.summary.length < 40 || parsed.summary.length > 1200)
-      throw new Error("摘要暂未整理完整，请重试。")
+      { fallback(); return }
     const validIds = new Set(messages.map(m => m.id))
     const references = Array.isArray(parsed.references) ? parsed.references.flatMap(ref => {
       if (!ref || typeof ref.text !== "string" || !parsed.summary!.toString().includes(ref.text) || !Array.isArray(ref.sourceMessageIds)) return []

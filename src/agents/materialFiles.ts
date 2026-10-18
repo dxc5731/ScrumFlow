@@ -115,14 +115,19 @@ export async function documentFiles(title: string, markdown: string): Promise<Ge
     else if ("text" in token) children.push(new Paragraph({ children: runs("tokens" in token ? token.tokens as Token[] : undefined, String(token.text)), spacing: { after: 140, line: 330 } }))
   }
   const document = new Document({ creator: "爱管理", title, description: "基于项目记录生成的项目管理成果",
-    styles: { default: { document: { run: { font: { ascii: "Calibri", eastAsia: "Microsoft YaHei", hAnsi: "Calibri" }, size: 22 } } } },
+    styles: { default: { document: { run: { font: { ascii: "Calibri", eastAsia: "Microsoft YaHei", hAnsi: "Calibri" }, size: 22, color: "334155" } } },
+      paragraphStyles: [
+        { id: "Heading1", name: "Heading 1", basedOn: "Normal", next: "Normal", quickFormat: true, run: { size: 36, bold: true, color: "403456" } },
+        { id: "Heading2", name: "Heading 2", basedOn: "Normal", next: "Normal", quickFormat: true, run: { size: 27, bold: true, color: "4E4265" } },
+        { id: "Heading3", name: "Heading 3", basedOn: "Normal", next: "Normal", quickFormat: true, run: { size: 23, bold: true, color: "475569" } },
+      ] },
     sections: [{ properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: 1134, bottom: 1134, left: 1134, right: 1134 } } },
       headers: { default: new Header({ children: [new Paragraph({ children: [new TextRun({ text: title, size: 18, color: "64748B" })] })] }) },
       footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ children: [PageNumber.CURRENT] })] })] }) }, children }] })
   const name = safeMaterialFilename(title)
   const { default: DOMPurify } = await import("dompurify")
   const html = DOMPurify.sanitize(await marked.parse(markdown), { USE_PROFILES: { html: true }, FORBID_TAGS: ["img", "iframe", "form"], FORBID_ATTR: ["style"] })
-  const printable = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escape(title)}</title><style>body{font:16px/1.8 'Microsoft YaHei',sans-serif;max-width:900px;margin:40px auto;padding:0 28px;color:#172033}h1,h2,h3{line-height:1.4;break-after:avoid}table{border-collapse:collapse;width:100%;font-size:14px}th,td{border:1px solid #ccd2dc;padding:8px;text-align:left}th{background:#eef2ff}pre{white-space:pre-wrap}a{color:#4338ca}@page{size:A4;margin:20mm}@media print{body{margin:0;padding:0}tr{break-inside:avoid}}</style><body>${html}</body></html>`
+  const printable = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>${escape(title)}</title><style>body{font:14px/1.95 'Microsoft YaHei',sans-serif;max-width:960px;margin:44px auto;padding:0 32px 40px;color:#334155}header{display:flex;justify-content:space-between;padding-bottom:15px;border-bottom:2px solid #74618f;color:#74618f;font-size:10px;letter-spacing:.14em}h1{font-size:28px;color:#29364b;margin:30px 0 18px}h2{font-size:18px;margin:32px 0 12px;padding-bottom:9px;border-bottom:1px solid #e2e5ec;color:#4e4265}h3{font-size:15px;margin-top:24px}h1,h2,h3{line-height:1.5;break-after:avoid}table{border-collapse:collapse;width:100%;font-size:12px;margin:16px 0 24px}th,td{border-bottom:1px solid #e2e5ed;padding:10px 12px;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#f1eff6;color:#655677}tbody tr:nth-child(even){background:#fafbfc}blockquote{border-left:3px solid #baa16c;padding:10px 18px;background:#fbfaf7;margin:18px 0;color:#76633e;font-size:12px}pre{white-space:pre-wrap}a{color:#63508f}footer{border-top:1px solid #dddfe8;margin-top:40px;padding-top:14px;color:#7a8290;font-size:10px}@page{size:A4;margin:18mm}@media print{body{margin:0;padding:0;font-size:11px}h1{font-size:23px}table{font-size:10px}tr{break-inside:avoid}}</style><body><header><span>SCRUMFLOW / MEETING RECORD</span><span>决策 · 责任 · 执行证据</span></header>${html}<footer>ScrumFlow · 根据本场保存记录生成，审批结果与执行审计分别列示。</footer></body></html>`
   return [
     { name: `${name}.docx`, blob: await Packer.toBlob(document), sourceText: markdown },
     { name: `${name}.md`, blob: new Blob([markdown], { type: "text/markdown;charset=utf-8" }), sourceText: markdown },

@@ -5,6 +5,7 @@ import type {
 import { mergeMeetingConstraints } from "./meetingWorkingState"
 import { analyzeMeetingRequest } from "./meetingRequest"
 import { requestsPlanReview } from "./meetingHandoff"
+import { meetingFacilitationContext } from "./meetingFacilitation"
 
 export type MeetingIntent = "plan" | "risk" | "workload" | "execute" | "compare" | "select" | "diagnose" | "summary" | "other"
 
@@ -112,6 +113,7 @@ export function buildMeetingContext(state: ProjectDataState, session: MeetingSes
   return {
     meetingId: session.id, targetType: session.targetType, targetId: session.targetId,
     currentTopic: memory.currentTopic,
+    facilitation: meetingFacilitationContext(state, session),
     recentMessages,
     referencedStoryId: memory.focusStoryIds.at(-1) ?? null,
     referencedTaskKeys: memory.referencedTaskKeys,

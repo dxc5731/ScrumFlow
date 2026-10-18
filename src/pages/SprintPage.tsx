@@ -15,6 +15,7 @@ import {
 import Modal from "../components/planning/Modal"
 import EventInsightPanel from "../components/planning/EventInsightPanel"
 import MeetingRoom from "../components/planning/MeetingRoom"
+import MeetingSetup from "../components/planning/MeetingSetup"
 import { notify } from "../components/planning/ui"
 import {
   sprintStartChecks,
@@ -58,6 +59,8 @@ export default function SprintPage() {
   const [retro, setRetro] = useState({ mainProblem: "", nextImprovement: "" })
   const [carryOver, setCarryOver] = useState<Record<string, string>>({})
   const [meetingId, setMeetingId] = useState<string | null>(null)
+  const [meetingSetup, setMeetingSetup] = useState(false)
+  const [announceWelcome, setAnnounceWelcome] = useState(false)
   const isPO = state.workspace.actorMode === "po"
 
   const sprints = Object.values(state.sprints).sort((a, b) =>
@@ -140,7 +143,8 @@ export default function SprintPage() {
 
   return (
     <div className="flex h-full bg-[#F8FAFC]">
-      {meetingId && <MeetingRoom key={meetingId} initialSessionId={meetingId} onClose={() => setMeetingId(null)} />}
+      {meetingSetup && sprint && <MeetingSetup targetType="sprint" targetId={sprint.id} onClose={() => setMeetingSetup(false)} onStart={id => { setMeetingSetup(false); setAnnounceWelcome(true); setMeetingId(id) }} />}
+      {meetingId && <MeetingRoom key={meetingId} announceWelcome={announceWelcome} initialSessionId={meetingId} onClose={() => setMeetingId(null)} />}
       <aside className="flex w-[300px] flex-shrink-0 flex-col border-r border-[#E2E7EE] bg-white">
         <div className="flex h-12 items-center border-b border-[#EAECF0] px-3">
           <div>
@@ -213,8 +217,8 @@ export default function SprintPage() {
                 <p className="mt-1 flex items-center gap-1 text-[10px] text-[#98A2B3]"><CalendarDays size={11} /> {sprint.startDate} 至 {sprint.endDate}</p>
               </div>
               {!isPO && <span className="rounded bg-[#F2F4F7] px-2 py-1 text-[10px] text-[#667085]">员工只读</span>}
-              {isPO && <button className="secondary-button" onClick={() => setMeetingId(state.createMeeting("sprint", sprint.id).id)}><Bot size={12} /> 发起 AI 项目会议</button>}
-              {isPO && recentMeeting && <button className="secondary-button" onClick={() => setMeetingId(recentMeeting.id)}><Clock3 size={12} /> {recentMeeting.status === "active" ? "继续会议" : "查看会议记录"}</button>}
+              {isPO && <button className="secondary-button" onClick={() => setMeetingSetup(true)}><Bot size={12} /> 发起 AI 项目会议</button>}
+              {isPO && recentMeeting && <button className="secondary-button" onClick={() => { setAnnounceWelcome(false); setMeetingId(recentMeeting.id) }}><Clock3 size={12} /> {recentMeeting.status === "active" ? "继续会议" : "查看会议记录"}</button>}
               {isPO && <button className="secondary-button" onClick={openEdit}><Pencil size={12} /> 编辑</button>}
               {isPO && sprint.status !== "closed" && (
                 <button className="secondary-button" onClick={() => { setPicked(new Set()); setSearch(""); setDialog("stories") }}><Plus size={12} /> 加入 Story</button>

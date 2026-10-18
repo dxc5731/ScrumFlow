@@ -9,6 +9,7 @@ import { selectBlockedByIncompletePredecessor, selectCriticalPathTaskIds, select
 import { EVENT_BADGE_STYLE, eventTooltip, highestSeverity, useProjectEvents } from "../hooks/useProjectEvents";
 import type { EpicEntity, StoryEntity, SubtaskEntity, TaskEntity } from "../types";
 import type { DetectedEvent } from "../utils/eventDetection";
+import { useDismissiblePopover } from "../hooks/useDismissiblePopover";
 
 const CELL = 26;
 const LABEL_W = 320;
@@ -64,6 +65,7 @@ export default function Gantt({
     ...(captureFullScope ? { memberFilterId: null, ganttCollapsedIds: [], ganttHeatmapHighlight: null } : {}),
   } : state.workspace;
   const [exportOpen, setExportOpen] = useState(false);
+  const exportMenuRef = useDismissiblePopover(exportOpen, () => setExportOpen(false));
   const [exportBusy, setExportBusy] = useState(false);
   const exportView = async (format: "png" | "hd" | "pdf") => {
     setExportOpen(false); setExportBusy(true);
@@ -273,7 +275,7 @@ export default function Gantt({
         {dependencySource && <div className="flex items-center gap-2 rounded-lg border border-[#D9D6FE] bg-[#F9F5FF] px-2 py-1 text-[10px] text-[#5925DC]"><Link2 size={11} />从 {dependencySource} 选择后置任务<button onClick={() => setDependencySource(null)}>取消</button></div>}
         {selectedDependencyData && <div className="flex items-center gap-2 rounded-lg border border-[#D9D6FE] bg-[#F9F5FF] px-2 py-1 text-[10px] text-[#5925DC]"><span className="max-w-28 truncate">{state.tasks[selectedDependencyData.sourceTaskId]?.title}</span><span>→</span><span className="max-w-28 truncate">{state.tasks[selectedDependencyData.targetTaskId]?.title}</span><b>FS</b><button className="text-[#B42318]" title="删除依赖" onClick={() => { state.deleteDependency(selectedDependencyData.id); setSelectedDependency(null); notify("依赖已删除"); }}><Trash2 size={11} /></button></div>}
         <div className="ml-auto text-[10px] text-[#667085]">{sprint?.name} · {rows.filter((row) => row.kind === "task").length} 个任务</div>
-        <div className="relative"><button className="toolbar-toggle" disabled={exportBusy} onClick={() => setExportOpen(!exportOpen)}>{exportBusy ? "正在导出…" : "导出"}<ChevronDown size={13} /></button>
+        <div className="relative" ref={exportMenuRef}><button className="toolbar-toggle" aria-expanded={exportOpen} disabled={exportBusy} onClick={() => setExportOpen(!exportOpen)}>{exportBusy ? "正在导出…" : "导出"}<ChevronDown size={13} /></button>
           {exportOpen && <div className="absolute right-0 top-full z-50 mt-2 w-44 rounded-lg border border-[#E2E7EE] bg-white p-1 shadow-lg">{([ ["png", "导出 PNG"], ["hd", "导出高清图片"], ["pdf", "导出 PDF"] ] as const).map(([format, title]) => <button key={format} className="menu-row w-full" onClick={() => void exportView(format)}>{title}</button>)}</div>}
         </div>
       </div>}

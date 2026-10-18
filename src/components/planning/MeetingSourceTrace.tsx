@@ -19,6 +19,13 @@ export default function MeetingSourceTrace({ children, ids, state }: { children:
     closing.current = setTimeout(() => { setLeaving(true); closing.current = setTimeout(() => { setOpen(false); setPosition(null) }, 120) }, 300)
   }
   useEffect(() => () => { if (opening.current) clearTimeout(opening.current); if (closing.current) clearTimeout(closing.current) }, [])
+  useEffect(() => {
+    if (!open) return
+    const outside = (event: PointerEvent) => { if (!popup.current?.contains(event.target as Node) && !trigger.current?.contains(event.target as Node)) { cancel(); setOpen(false) } }
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { cancel(); setOpen(false); trigger.current?.focus() } }
+    document.addEventListener("pointerdown", outside, true); document.addEventListener("keydown", escape)
+    return () => { document.removeEventListener("pointerdown", outside, true); document.removeEventListener("keydown", escape) }
+  }, [open])
   useLayoutEffect(() => {
     if (!open || !trigger.current || !popup.current) return
     const place = () => {
@@ -46,7 +53,7 @@ export default function MeetingSourceTrace({ children, ids, state }: { children:
     {open && createPortal(<>
       {position && !leaving && <div className="meeting-source-bridge" style={position.bridge} onMouseEnter={cancel} onMouseLeave={leave} />}
       <aside ref={popup} id={popupId} className={`meeting-source-popover ${leaving ? "is-leaving" : ""}`} style={{ left: position?.left ?? 12, top: position?.top ?? 12, visibility: position ? "visible" : "hidden" }} role="region" aria-label="当时的相关讨论" onMouseEnter={cancel} onMouseLeave={leave} onFocus={cancel} onBlur={leave} onKeyDown={e => { if (e.key === "Escape") setOpen(false) }}>
-      <header><MessageCircle size={15} /><strong>当时的相关讨论</strong><small>真实会议记录</small></header>
+      <header><MessageCircle size={15} /><strong>当时的相关讨论</strong><small>{state.meetingSessions[messages[0]?.meetingId]?.demo ? "演示原始记录" : "真实会议记录"}</small></header>
       <div className="meeting-source-messages" tabIndex={0}>{messages.map(message => {
         const member = state.members[message.senderId], digital = message.senderType === "digital_member"
         return <article key={message.id} data-source-message-id={message.id}><div className="meeting-source-byline">{member ? <MemberAvatar memberId={member.id} size={26} /> : <span className="meeting-source-agent"><Sparkles size={14} /></span>}<strong>{member?.name ?? agentName(message.senderId)}</strong><small>{digital ? "数字员工" : member ? "项目成员" : "专业 Agent"}</small></div><p>{message.content.replace(/^@\S+\s*/, "").replace(/[*#\x60]/g, "")}</p></article>

@@ -30,6 +30,10 @@ import type {
   MeetingMemory,
   MeetingQaTrace,
   MeetingSession,
+  MeetingStartOptions,
+  MeetingHostEventKind,
+  MeetingHostEventInput,
+  MeetingHostChoice,
   ProjectDataState,
   ProposalAction,
   ProposalActionDecision,
@@ -55,6 +59,9 @@ import { createMeetingMemory } from "../agents/meetingContext"
 import { buildProjectAnalysisSnapshot } from "../agents/meetingSnapshot"
 import { synchronizeWorkingState } from '../agents/meetingWorkingState'
 import { generateMeetingMinutes, meetingFactFromMessage, recordMeetingTopic, topicFromMeetingFact } from "../agents/meetingMinutes"
+import { currentMeetingAgenda, hostEventContent, hostEventKey, initializeMeetingFacilitation, meetingAgenda, meetingClock } from "../agents/meetingFacilitation"
+import { analyzeMeetingBlocker, meetingBlockerProposalInput, meetingSprintTasks, sprintBlockerEvent } from "../agents/meetingManagement"
+import { captureMeetingOutcome, meetingOutcomeAnnouncement } from "../agents/meetingOutcomes"
 
 function refreshedEndedMeetingMinutes(state: ProjectDataState, proposalId: string) {
   const sessions = Object.values(state.meetingSessions).filter((session) => session.status === "ended" && session.proposalIds.includes(proposalId))
@@ -133,10 +140,17 @@ export interface BlankProjectInput {
 export interface ProjectActions {
   refreshProjectEvents: (now?: Date) => void
   ignoreProjectEvent: (id: string) => void
-  createMeeting: (targetType: "project" | "story" | "sprint", targetId: string) => MeetingSession
-  addMeetingMessage: (meetingId: string, input: Pick<MeetingMessage, "senderType" | "senderId" | "content"> & Partial<Pick<MeetingMessage, "proposalId" | "evidence" | "rawEvidence" | "signal" | "artifactIds" | "handoffTo">>) => MeetingMessage
+  createMeeting: (targetType: "project" | "story" | "sprint", targetId: string, options?: MeetingStartOptions) => MeetingSession
+  dispatchMeetingHostEvent: (meetingId: string, kind: MeetingHostEventKind, input?: MeetingHostEventInput) => MeetingMessage | null
+  markMeetingReviewed: (meetingId: string, messageId: string) => void
+  respondMeetingHostEvent: (meetingId: string, messageId: string, choice: MeetingHostChoice, taskId?: string) => ActionResult & { proposalId?: string }
+  advanceMeetingAgenda: (meetingId: string) => void
+  extendMeetingTime: (meetingId: string, minutes: 5 | 10) => void
+  setMeetingHostVoice: (meetingId: string, enabled: boolean) => void
+  reconcileMeetingHost: (meetingId: string, now?: number, allowGuide?: boolean) => void
+  addMeetingMessage: (meetingId: string, input: Pick<MeetingMessage, "senderType" | "senderId" | "content"> & Partial<Pick<MeetingMessage, "proposalId" | "evidence" | "rawEvidence" | "signal" | "artifactIds" | "handoffTo" | "inputSource">>) => MeetingMessage
   endMeeting: (meetingId: string) => ActionResult
-  setMeetingPresentation: (meetingId: string, patch: Pick<MeetingSession, "narrative" | "presentationMode">) => void
+  setMeetingPresentation: (meetingId: string, patch: Pick<MeetingSession, "narrative" | "presentationMode" | "pinnedAt">) => void
   linkMeetingProposal: (meetingId: string, proposalId: string) => ActionResult
   setMeetingMemory: (meetingId: string, memory: MeetingMemory) => ActionResult
   recordMeetingQaTrace: (meetingId: string, trace: MeetingQaTrace) => ActionResult
@@ -1920,7 +1934,7 @@ function existingProposalResult(state: ProjectDataState, action: ProposalAction,
   }
 }
 
-function executeProposalAction(store: ProjectStore, action: ProposalAction, resolvedIds: Record<string, string>): { ok: boolean; message: string; id: string | null; existing?: boolean } {
+function executeProposalAction(store: ProjectStore, action: ProposalAction, resolvedIds: Record<string, string>, current: () => ProjectStore): { ok: boolean; message: string; id: string | null; existing?: boolean } {
   const existing = existingProposalResult(store, action, resolvedIds)
   if (existing) return { ok: true, message: "处理结果已存在，未重复写入", id: existing, existing: true }
   const value = action.proposedValue
@@ -1949,7 +1963,7 @@ function executeProposalAction(store: ProjectStore, action: ProposalAction, reso
       const source = resolvedIds[String(value.sourceTaskId)] ?? String(value.sourceTaskId)
       const target = resolvedIds[String(value.targetTaskId)] ?? String(value.targetTaskId)
       const result = store.addDependency(source, target)
-      const found = Object.values(useProjectStore.getState().dependencies).find((item) => item.sourceTaskId === source && item.targetTaskId === target)
+      const found = Object.values(current().dependencies).find((item) => item.sourceTaskId === source && item.targetTaskId === target)
       return { ...result, id: found?.id ?? null }
     }
     case "CREATE_DISCUSSION": {
@@ -1967,7 +1981,7 @@ function executeProposalAction(store: ProjectStore, action: ProposalAction, reso
         targetId,
         typeof value.content === "string" && value.content ? value.content : action.reason,
       )
-      const created = Object.values(useProjectStore.getState().discussions).find(item => item.targetType === targetType && item.targetId === targetId && item.content === value.content)
+      const created = Object.values(current().discussions).find(item => item.targetType === targetType && item.targetId === targetId && item.content === value.content)
       return { ...result, id: created?.id ?? null }
     }
     case "BLOCK_TASK": {
@@ -1988,9 +2002,9 @@ function executeProposalAction(store: ProjectStore, action: ProposalAction, reso
     }
     case "UPDATE_DEADLINE":
     case "CHANGE_ASSIGNEE":
-      return executeProposalAction(store, { ...action, actionType: "UPDATE_TASK" }, resolvedIds)
+      return executeProposalAction(store, { ...action, actionType: "UPDATE_TASK" }, resolvedIds, current)
     case "CHANGE_PRIORITY":
-      return executeProposalAction(store, { ...action, actionType: "UPDATE_STORY" }, resolvedIds)
+      return executeProposalAction(store, { ...action, actionType: "UPDATE_STORY" }, resolvedIds, current)
   }
 }
 
@@ -2019,10 +2033,11 @@ export interface CreateProposalInput {
 
 export const PROPOSAL_SCHEMA_VERSION = 1
 
-export const useProjectStore = create<ProjectStore>()(
+/** The same actions/executor can run in an isolated, non-persisting sandbox. */
+export const createProjectStore = (sandbox?: ProjectDataState) => create<ProjectStore>()(
   persist(
     (set, get) => ({
-      ...createInitialProjectState(),
+      ...(sandbox ? structuredClone(sandbox) : createInitialProjectState()),
 
       refreshProjectEvents: (now = new Date()) => {
         const state = get()
@@ -2034,7 +2049,7 @@ export const useProjectStore = create<ProjectStore>()(
         if (record) set(state => ({ projectEvents: { ...state.projectEvents, [id]: { ...record, status: "ignored", updatedAt: nowIso() } } }))
       },
 
-      createMeeting: (targetType, targetId) => {
+      createMeeting: (targetType, targetId, options) => {
         const state = get()
         const story = targetType === "story" ? state.stories[targetId] : null
         const sprint = targetType === "sprint" ? state.sprints[targetId] : null
@@ -2058,6 +2073,7 @@ export const useProjectStore = create<ProjectStore>()(
             focusSprintId: sprint?.id ?? story?.sprintId ?? null,
           },
         }
+        if (options) initializeMeetingFacilitation(state, session, options)
         synchronizeWorkingState(session.memory!, state, session)
         const existingTasks = story ? story.taskIds.length : Object.values(state.tasks).filter((task) => state.stories[task.storyId]?.sprintId === targetId).length
         const sprintName = story?.sprintId ? state.sprints[story.sprintId]?.name : sprint?.name
@@ -2071,6 +2087,11 @@ export const useProjectStore = create<ProjectStore>()(
             ? `项目会议已创建。目前${currentSprint ? currentSprint.effectiveStatus === "overdue" ? `${currentSprint.name} 在项目中仍标为进行中，但计划期已过` : `${currentSprint.name} 正在${currentSprint.status === "active" ? "进行" : "规划"}` : "没有进行中的 Sprint"}，项目共有 ${Object.keys(state.stories).length} 个 Story、${unfinished} 个未完成任务和 ${openRisks} 项未解决风险。可以讨论整个项目，也可以 @成员、@专业助手，或用 # 引用具体工作。`
             : `会议已创建。我们正在讨论${targetType === "story" ? ` ${story!.id.toUpperCase()}「${targetName}」` : `「${targetName}」`}。${sprintName ? `它属于 ${sprintName}，` : ""}目前有 ${existingTasks} 个任务。你可以直接提问，也可以输入 @ 让专业助手一起分析。`,
         }
+        if (session.facilitation) {
+          welcome.content = hostEventContent(state, session, "welcome")
+          welcome.hostEvent = { key: "welcome", kind: "welcome" }
+          session.topics = session.topics?.map(topic => ({ ...topic, createdFromMessageId: welcome.id }))
+        }
         session.messageIds.push(welcome.id)
         set((current) => ({
           meetingSessions: { ...current.meetingSessions, [id]: session },
@@ -2079,12 +2100,143 @@ export const useProjectStore = create<ProjectStore>()(
         return session
       },
 
+      // 所有主动主持事件共用入口；在持久化记录中去重，不进入问答编排或 Proposal 执行链。
+      dispatchMeetingHostEvent: (meetingId, kind, input) => {
+        const state = get(), session = state.meetingSessions[meetingId]
+        if (!session?.facilitation || session.status !== "active") return null
+        const smart = ["topic_deviation", "sprint_blocker", "blocker_followup"].includes(kind)
+        if (smart && !input) return null
+        const key = input?.key ?? hostEventKey(state, session, kind)
+        if (session.messageIds.some(id => state.meetingMessages[id]?.hostEvent?.key === key)) return null
+        if (input?.sourceMessageIds?.some(id => !session.messageIds.includes(id) || state.meetingMessages[id]?.senderType !== "user")) return null
+        const { content, evidence, ...metadata } = input ?? {}
+        const message: MeetingMessage = { id: makeId("meeting-message"), meetingId, senderType: "agent",
+          senderId: "project_orchestrator", content: content ?? hostEventContent(state, session, kind), evidence,
+          createdAt: nowIso(), hostEvent: { ...metadata, key, kind } }
+        set(current => ({ meetingMessages: { ...current.meetingMessages, [message.id]: message },
+          meetingSessions: { ...current.meetingSessions, [meetingId]: { ...current.meetingSessions[meetingId],
+            ...(smart ? { facilitation: { ...session.facilitation!, management: { ...session.facilitation?.management, lastInterventionAt: message.createdAt } } } : {}),
+            messageIds: [...current.meetingSessions[meetingId].messageIds, message.id] } } }))
+        return message
+      },
+
+      markMeetingReviewed: (meetingId, messageId) => {
+        const session = get().meetingSessions[meetingId]
+        if (!session?.facilitation || session.status !== "active" || !session.messageIds.includes(messageId)) return
+        const previous = session.facilitation.management?.reviewedThroughMessageId
+        if (session.messageIds.indexOf(previous ?? "") >= session.messageIds.indexOf(messageId)) return
+        set(current => ({ meetingSessions: { ...current.meetingSessions, [meetingId]: { ...session,
+          facilitation: { ...session.facilitation!, management: { ...session.facilitation!.management,
+            reviewedThroughMessageId: messageId, lastReviewedAt: nowIso() } } } } }))
+      },
+
+      respondMeetingHostEvent: (meetingId, messageId, choice, selectedTaskId) => {
+        const state = get(), session = state.meetingSessions[meetingId], message = state.meetingMessages[messageId], event = message?.hostEvent
+        if (!session?.facilitation || session.status !== "active" || message?.meetingId !== meetingId || !event || event.resolution) return { ok: false, message: "此提醒已处理或会议已结束" }
+        if (!["topic_deviation", "sprint_blocker", "blocker_followup"].includes(event.kind)) return { ok: false, message: "此消息无需确认" }
+        const deviation = event.kind === "topic_deviation"
+        const analyzed = !!event.analysisMessageId
+        const allowed = deviation ? ["return", "continue", "incorrect"] : analyzed ? ["propose", "defer"] : ["analyze", "defer"]
+        if (!allowed.includes(choice)) return { ok: false, message: "此提醒不支持该操作" }
+        const taskId = selectedTaskId ?? event.taskIds?.[0]
+        if (selectedTaskId && event.taskIds?.length && !event.taskIds.includes(selectedTaskId)) return { ok: false, message: "请分析此提醒所引用的任务" }
+        if (["analyze", "propose"].includes(choice) && !meetingSprintTasks(state, session).some(task => task.id === taskId)) return { ok: false, message: "请先确认当前 Sprint 中的任务" }
+        let proposalId: string | undefined
+        if (choice === "analyze") {
+          const answer = analyzeMeetingBlocker(state, session, taskId!)
+          if (!answer) return { ok: false, message: "任务已变化，请重新确认" }
+          const analysis = state.addMeetingMessage(meetingId, { senderType: "agent", senderId: "risk_dependency", content: answer.content, evidence: answer.evidence, rawEvidence: answer.rawEvidence })
+          state.dispatchMeetingHostEvent(meetingId, "blocker_followup", {
+            key: `blocker_followup:analysis:${taskId}`, taskIds: [taskId!], analysisMessageId: analysis.id,
+            sourceMessageIds: event.sourceMessageIds, riskIds: event.riskIds,
+            content: "风险与依赖助手已核对现有记录。是否把这项问题的跟进措施加入待确认行动？已有风险会复用；具体措施仍需在右侧人工审核后执行。",
+          })
+        }
+        if (choice === "propose") {
+          const analysis = state.meetingMessages[event.analysisMessageId!]
+          if (analysis?.meetingId !== meetingId || analysis.senderId !== "risk_dependency") return { ok: false, message: "请先完成风险与依赖分析" }
+          const input = meetingBlockerProposalInput(state, session, taskId!)
+          if (!input) return { ok: false, message: "任务已变化，请重新分析" }
+          const desired = input.actions[0]
+          const followupText = desired.actionType === "UPDATE_RISK" ? String(desired.proposedValue.mitigation).split("\n").at(-1)! : String(desired.proposedValue.content)
+          // Reuse pending/event-origin actions and already applied follow-ups across meetings.
+          const existing = Object.values(state.proposals).find(proposal => proposal.status !== "rejected" && proposal.actions.some(action => action.decision !== "rejected" && action.status !== "stale" && action.targetType === desired.targetType && action.targetId === desired.targetId &&
+            (action.actionType === desired.actionType && (desired.actionType === "UPDATE_RISK" ? String(action.proposedValue.mitigation ?? "").includes(followupText) : JSON.stringify(action.proposedValue) === JSON.stringify(desired.proposedValue)))))
+          if (existing) proposalId = existing.id
+          else {
+            // An applied mitigation/discussion may already contain this exact follow-up.
+            const content = desired.actionType === "UPDATE_RISK" ? String(desired.proposedValue.mitigation).split("\n").at(-1)! : String(desired.proposedValue.content)
+            if (desired.actionType === "UPDATE_RISK" && state.risks[desired.targetId]?.mitigation.includes(content) || desired.actionType === "CREATE_DISCUSSION" && Object.values(state.discussions).some(item => item.targetId === taskId && item.content === content)) return { ok: false, message: "项目中已有相同跟进措施，请查看现有记录" }
+            proposalId = state.createProposal(input).id
+          }
+          state.linkMeetingProposal(meetingId, proposalId)
+          state.addMeetingMessage(meetingId, { senderType: "agent", senderId: "project_orchestrator", content: existing ? "已关联现有跟进建议，可在右侧查看审核状态、实际执行结果及审计记录。" : "跟进建议已放到右侧决策与行动。请先采纳需要的措施，再点击应用；正式项目数据尚未修改。", proposalId })
+        }
+        set(current => {
+          const latest = current.meetingSessions[meetingId], management = latest.facilitation!.management
+          return { meetingMessages: { ...current.meetingMessages, [messageId]: { ...current.meetingMessages[messageId], hostEvent: { ...event, resolution: { choice, at: nowIso(), ...(taskId ? { taskId } : {}) } } } },
+            meetingSessions: { ...current.meetingSessions, [meetingId]: { ...latest, facilitation: { ...latest.facilitation!, management: { ...management,
+              ...(deviation ? { deviationSuppressedUntil: new Date(Date.now() + (choice === "incorrect" ? 300_000 : choice === "continue" ? 120_000 : 15_000)).toISOString() } : {}),
+              ...(choice === "incorrect" && event.topicSignature ? { dismissedTopicSignatures: [...new Set([...(management?.dismissedTopicSignatures ?? []), event.topicSignature])].slice(-30) } : {}),
+            } } } } }
+        })
+        return { ok: true, message: "已记录", ...(proposalId ? { proposalId } : {}) }
+      },
+
+      advanceMeetingAgenda: meetingId => {
+        const session = get().meetingSessions[meetingId]
+        if (!session?.facilitation || session.status !== "active") return
+        const agenda = meetingAgenda(session), active = currentMeetingAgenda(session)
+        if (!active) return
+        const next = agenda[agenda.findIndex(item => item.key === active.key) + 1]
+        set(current => ({ meetingSessions: { ...current.meetingSessions, [meetingId]: { ...session,
+          topics: session.topics?.map(topic => topic.id === active.topic.id ? { ...topic, status: "discussed" as const }
+            : topic.id === next?.topic.id ? { ...topic, status: "active" as const } : topic) } } }))
+        const blocker = sprintBlockerEvent(get(), get().meetingSessions[meetingId])
+        const message = blocker ? get().dispatchMeetingHostEvent(meetingId, "sprint_blocker", blocker) : get().dispatchMeetingHostEvent(meetingId, "agenda")
+        if (next && message) set(current => ({ meetingSessions: { ...current.meetingSessions, [meetingId]: {
+          ...current.meetingSessions[meetingId], topics: current.meetingSessions[meetingId].topics?.map(topic =>
+            topic.id === next.topic.id ? { ...topic, createdFromMessageId: message.id } : topic) } } }))
+      },
+
+      extendMeetingTime: (meetingId, minutes) => {
+        const session = get().meetingSessions[meetingId]
+        if (!session?.facilitation || session.status !== "active" || ![5, 10].includes(minutes)) return
+        set(current => ({ meetingSessions: { ...current.meetingSessions, [meetingId]: { ...session,
+          facilitation: { ...session.facilitation!, plannedMinutes: session.facilitation!.plannedMinutes + minutes } } } }))
+        get().dispatchMeetingHostEvent(meetingId, "extended")
+      },
+
+      setMeetingHostVoice: (meetingId, enabled) => {
+        const session = get().meetingSessions[meetingId]
+        if (!session?.facilitation || session.status !== "active") return
+        set(current => ({ meetingSessions: { ...current.meetingSessions, [meetingId]: { ...session,
+          facilitation: { ...session.facilitation!, voiceEnabled: enabled } } } }))
+      },
+
+      reconcileMeetingHost: (meetingId, now = Date.now(), allowGuide = true) => {
+        const state = get(), session = state.meetingSessions[meetingId]
+        if (!session?.facilitation || session.status !== "active") return
+        const clock = meetingClock(session, now)
+        if (clock.phase === "overtime") { state.dispatchMeetingHostEvent(meetingId, "overtime"); return }
+        if (clock.phase === "warning") { state.dispatchMeetingHostEvent(meetingId, "time_warning"); return }
+        const stage = currentMeetingAgenda(session)
+        if (!stage || !allowGuide) return
+        const management = session.facilitation.management
+        if (management?.lastInterventionAt && now - Date.parse(management.lastInterventionAt) < 30_000) return
+        const since = session.messageIds.indexOf(stage.topic.createdFromMessageId)
+        const speakers = new Set(session.messageIds.slice(since + 1).map(id => state.meetingMessages[id])
+          .filter(message => message?.senderType === "user").map(message => message.senderId))
+        if (speakers.size >= 2) state.dispatchMeetingHostEvent(meetingId, "guide")
+      },
+
       addMeetingMessage: (meetingId, input) => {
         const session = get().meetingSessions[meetingId]
         if (!session || session.status !== "active") throw new Error("会议已结束，请发起新会议")
         if (!input.content.trim()) throw new Error("消息不能为空")
         const message: MeetingMessage = {
           ...input, id: makeId("meeting-message"), meetingId,
+          ...(input.senderType === "user" ? { inputSource: input.inputSource ?? "text" as const } : {}),
           content: input.content.trim(), createdAt: nowIso(),
         }
          const fact = meetingFactFromMessage(get(), message)
@@ -2108,10 +2260,22 @@ export const useProjectStore = create<ProjectStore>()(
       },
 
       endMeeting: (meetingId) => {
+         get().dispatchMeetingHostEvent(meetingId, "closing")
          const session = get().meetingSessions[meetingId]
          if (!session || session.status === "ended") return { ok: false, message: "会议已结束或不存在" }
          const ended = { ...session, status: "ended" as const, endedAt: nowIso(),
            topics: session.topics?.map((topic) => topic.status === "active" ? { ...topic, status: "recorded" as const } : topic) }
+         if (ended.facilitation) {
+           const clock = meetingClock(ended)
+           ended.facilitation = { ...ended.facilitation, actualDurationMs: clock.actualMs,
+             actualOvertimeMs: clock.demo ? null : clock.overtimeMs,
+             ...(clock.demo ? { demoElapsedMs: clock.elapsedMs, demoOvertimeMs: clock.overtimeMs } : {}) }
+         }
+         if (ended.facilitation) {
+           get().dispatchMeetingHostEvent(meetingId, "outcome", { key: "outcome", content: meetingOutcomeAnnouncement(get(), ended) })
+           ended.messageIds = get().meetingSessions[meetingId].messageIds
+         }
+         ended.outcomeSnapshot = captureMeetingOutcome(get(), ended)
          set((state) => ({ meetingSessions: { ...state.meetingSessions, [meetingId]: {
            ...ended, minutes: generateMeetingMinutes(state, ended),
          } } }))
@@ -2123,9 +2287,12 @@ export const useProjectStore = create<ProjectStore>()(
         const proposal = get().proposals[proposalId]
         if (!session || !proposal || session.projectId !== proposal.projectId) return { ok: false, message: "会议或建议不存在" }
         if (session.proposalIds.includes(proposalId)) return { ok: true, message: "建议已关联会议" }
+        const canAttribute = proposal.origin === "meeting" && !proposal.sourceMeetingId && session.status === "active" &&
+          Date.parse(proposal.createdAt) >= Date.parse(session.createdAt) &&
+          !Object.values(get().meetingSessions).some(other => other.id !== meetingId && other.proposalIds.includes(proposalId))
         set((state) => ({ meetingSessions: { ...state.meetingSessions, [meetingId]: {
           ...session, proposalIds: [...session.proposalIds, proposalId],
-        } } }))
+        } }, ...(canAttribute ? { proposals: { ...state.proposals, [proposalId]: { ...proposal, sourceMeetingId: meetingId } } } : {}) }))
         return { ok: true, message: "建议已加入会议" }
       },
 
@@ -2269,7 +2436,7 @@ export const useProjectStore = create<ProjectStore>()(
                 const beforeIds = new Set(get().history.map((entry) => entry.id))
                 try {
                   const resolvedIds = Object.fromEntries(results.filter((candidate) => candidate.resultTargetId).map((candidate) => [candidate.id, candidate.resultTargetId!]))
-                  const result = executeProposalAction(get(), item, resolvedIds)
+                  const result = executeProposalAction(get(), item, resolvedIds, get)
                   item.resultTargetId = result.id
                   const changed = get().history.some((entry) => !beforeIds.has(entry.id))
                   item.status = result.ok && (changed || result.existing) ? "applied" : "failed"
@@ -5365,8 +5532,9 @@ export const useProjectStore = create<ProjectStore>()(
     {
       name: "scrumflow-course-project-v2",
       version: CURRENT_SCHEMA_VERSION,
+      skipHydration: Boolean(sandbox),
       storage: createJSONStorage(() =>
-        typeof window === "undefined" || import.meta.env.MODE === "test"
+        sandbox ? { getItem: () => null, setItem: () => {}, removeItem: () => {} } : typeof window === "undefined" || import.meta.env.MODE === "test"
           ? memoryStorage
           : localProjectStorage,
       ),
@@ -5383,6 +5551,9 @@ export const useProjectStore = create<ProjectStore>()(
     },
   ),
 )
+
+export const useProjectStore = createProjectStore()
+export const projectDataSnapshot = dataSnapshot
 
 export function resetProjectStoreForTests() {
   useProjectStore.setState({ ...createInitialProjectState() })

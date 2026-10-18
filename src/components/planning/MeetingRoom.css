@@ -1,4 +1,6 @@
 .meeting-room {
+  height: 100dvh;
+  overflow: hidden;
   position: fixed;
   inset: 0;
   z-index: 105;
@@ -331,6 +333,8 @@
   min-height: 0;
   flex: 1;
   grid-template-columns: 258px 8px minmax(0, 1fr) 8px 330px;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .meeting-pane { min-width: 0; min-height: 0; }
@@ -435,14 +439,16 @@
 .meeting-timeline {
   display: flex;
   min-height: 0;
-  flex: 1;
+  flex: 1 1 0;
   flex-direction: column;
   gap: 18px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 24px max(24px, calc((100% - 710px) / 2)) 28px;
 }
 
-.meeting-message { display: flex; align-items: flex-start; gap: 10px; max-width: 90%; }
+.meeting-message { display: flex; flex-shrink: 0; align-items: flex-start; gap: 10px; max-width: 96%; }
 .meeting-message--human { flex-direction: row-reverse; align-self: flex-end; }
 .meeting-message-avatar { flex: none; }
 .meeting-message-content { min-width: 0; }
@@ -704,8 +710,8 @@
   .meeting-header-team { display: none; }
   .meeting-header-title h1 { font-size: 13px; }
   .meeting-header-title p { max-width: 230px; }
-  .meeting-header-actions > button:not(.meeting-header-close),
-  .meeting-history-wrap > button { width: 32px; padding: 0; font-size: 0; }
+  .meeting-header .meeting-header-actions > button:not(.meeting-header-close),
+  .meeting-header .meeting-history-wrap > button { width: 32px; padding: 0; font-size: 0; }
   .meeting-header-actions > button svg,
   .meeting-history-wrap > button svg { flex: none; }
   .meeting-live { font-size: 0; }
@@ -733,9 +739,9 @@
   .meeting-header-symbol { width: 30px; height: 30px; }
   .meeting-header-title p { width: 100%; max-width: 100%; }
   .meeting-header-actions { gap: 0; }
-  .meeting-header-actions .meeting-technical-wrap { display: none; }
-  .meeting-header-actions > button,
-  .meeting-history-wrap > button { width: 28px !important; }
+  .meeting-header .meeting-header-actions .meeting-technical-wrap { display: none; }
+  .meeting-header .meeting-header-actions > button,
+  .meeting-header .meeting-history-wrap > button { width: 28px !important; }
   .meeting-chat-heading { padding: 15px 16px 12px; }
   .meeting-chat-heading > span { display: none; }
   .meeting-timeline { gap: 17px; padding: 18px 13px 23px; }

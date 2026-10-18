@@ -2,24 +2,31 @@ import type { MeetingSession, ProjectDataState } from "../types"
 import { generateMeetingMinutes } from "./meetingMinutes"
 import { buildExecutionSummary } from "./meetingExecutionSummary"
 import { agentName } from "./meetingConversation"
+import { actionOutcome, meetingInsights as meetingInsightsForMinutes, meetingOutcomeState, meetingOwnedProposals } from "./meetingOutcomes"
 
 /** A reader's projection of the same reviewed actions and persisted facts. */
 export function readableMeeting(state: ProjectDataState, session: MeetingSession) {
+  state = meetingOutcomeState(state, session)
   const minutes = generateMeetingMinutes(state, session)
   const proposals = session.proposalIds.map(id => state.proposals[id]).filter(Boolean)
-  const execution = buildExecutionSummary(state, proposals)
+  const owned = meetingOwnedProposals(state, session)
+  const execution = buildExecutionSummary(state, owned)
   const actions = proposals.flatMap(proposal => proposal.actions.map(action => {
+    const outcome = actionOutcome(state, proposal, action)
+    const attributed = owned.some(p => p.id === proposal.id)
     const resultId = action.resultTargetId ?? action.targetId
-    const actual = action.status === "applied" ? state.tasks[resultId] ?? state.subtasks[resultId] : undefined
+    const actual = action.status === "applied" ? action.targetType === "risk" ? state.risks[resultId] : state.tasks[resultId] ?? state.subtasks[resultId] : undefined
     const title = action.actionType === "ADD_DEPENDENCY" ? "连接前后两项工作"
-      : actual?.title ?? String(action.proposedValue.title ?? state.tasks[action.targetId]?.title ?? state.stories[action.targetId]?.title ?? "项目安排")
-    const memberId = actual?.assigneeId ?? String(action.proposedValue.assigneeId ?? action.proposedValue.ownerId ?? "")
-    const estimate = actual?.estimate ?? action.proposedValue.estimate
-    const status = action.status === "applied" ? "已执行" : action.decision === "rejected" ? "本次未采用"
-      : action.status === "failed" || action.status === "stale" ? "需要复核" : action.decision === "accepted" ? "已采纳，待执行" : "待审核"
-    return { id: action.id, title, member: state.members[memberId]?.name ?? "待确认", estimate: typeof estimate === "number" ? estimate : null,
+      : actual?.title ?? String(action.proposedValue.title ?? state.tasks[action.targetId]?.title ?? state.stories[action.targetId]?.title ?? state.risks[action.targetId]?.title ?? "项目安排")
+    const memberId = actual && "assigneeId" in actual ? actual.assigneeId : actual && "ownerId" in actual ? actual.ownerId : undefined
+    const assignedMemberId = memberId ?? String(action.proposedValue.assigneeId ?? action.proposedValue.ownerId ?? "")
+    const estimate = actual && "estimate" in actual ? actual.estimate : undefined
+    const assignedEstimate = estimate ?? action.proposedValue.estimate
+    const status = `${attributed ? "" : "关联建议 · "}${outcome.executed ? "已执行" : action.decision === "rejected" ? "本次未采用"
+      : outcome.bucket === "pending" ? "待审核" : outcome.label === "已采纳 · 待执行" ? "已采纳，待执行" : outcome.label}`
+    return { id: action.id, title, member: state.members[assignedMemberId]?.name ?? "待确认", estimate: typeof assignedEstimate === "number" ? assignedEstimate : null,
       sourceMessageIds: [...new Set([...session.messageIds.filter(id => state.meetingMessages[id]?.proposalId === proposal.id), ...(session.qaTrace ?? []).filter(trace => trace.proposalId === proposal.id).map(trace => trace.messageId)])],
-      status, tone: status === "已执行" ? "done" : status === "本次未采用" ? "rejected" : "pending" }
+      status, tone: !attributed ? "related" : outcome.executed ? "done" : outcome.bucket === "rejected" ? "rejected" : outcome.bucket === "reused" ? "reused" : "pending" }
   }))
   const focusedStories = [...new Set([...(session.memory?.focusStoryIds ?? []), ...(session.topics ?? []).flatMap(topic => topic.relatedEntityIds.filter(id => state.stories[id]))])]
   const discussedRisks = (session.topics ?? []).some(topic => topic.type === "risk") || (session.qaTrace ?? []).some(trace => trace.calledAgents.includes("risk_dependency"))
@@ -47,8 +54,12 @@ export function readableMeeting(state: ProjectDataState, session: MeetingSession
 
 export function readableMinutesMarkdown(state: ProjectDataState, session: MeetingSession): string {
   const view = readableMeeting(state, session)
+  const i = meetingInsightsForMinutes(state, session)
   const list = (items: string[], empty: string) => items.length ? items.map(item => `- ${item}`).join("\n") : empty
   return `# ${session.title}\n\n${new Date(session.createdAt).toLocaleDateString("zh-CN")} · ${view.participants.join("、")}\n\n` +
+    `${session.demo ? "> 离线演示归档：成员发言、主持语义事件及审核操作为预设记录。分析与执行使用本地程序，写回仅在独立沙盒；不代表实时模型调用。\n\n" : ""}` +
+    `## 会议记录概览\n\n| 消息 | 主持事件 | 已执行 | 已拒绝 | 待审 |\n| --- | --- | --- | --- | --- |\n| ${i.messages.length} 条 | ${i.events.length} 次 | ${i.counts.executed} 项 | ${i.counts.rejected} 项 | ${i.counts.pending} 项 |\n\n` +
+    `## 决策、责任与执行证据\n\n| 行动 | 负责人 | 审核人 | 结果 | 写回审计 |\n| --- | --- | --- | --- | --- |\n${i.actions.map(a => `| ${a.title.replace(/\|/g, "／")} | ${a.owner} | ${a.reviewer} | ${a.label} | ${a.history.length} 条 |`).join("\n")}\n\n登记执行成功与工程任务完成分开记录，拒绝与待审项不会执行。\n\n` +
     `## ✨ 这次会议主要解决了什么\n\n${view.summary.join("\n\n")}\n\n` +
     `## ✅ 我们已经决定\n\n${list(view.decisions, "尚未确认最终决定。已讨论方案保留为建议。\n")}\n\n` +
     `## ⚠️ 还需要关注\n\n${list(view.attention, "本次没有记录新的风险或待核实事项。")}\n\n` +
@@ -93,7 +104,7 @@ export function presentMeetingReply(content: string, _state: ProjectDataState, r
       main.push(lead); used += lead.length; extra.push(block.slice(cut + 1)); return;
     }
     if (role === "risk_dependency" && /^(?:登记因果链|已登记的因果链|完整依赖链|另外.*(?:登记边|无登记边))/.test(block)) { extra.push(block); return; }
-    if (/^(?:#+\s*)?(?:详细(?:依据|数据|分析)|数据(?:证据|来源)|完整依赖|判断依据|What-if)/i.test(block)) supplementary = true;
+    if (index > 0 && /^(?:#+\s*)?(?:详细(?:依据|数据|分析)|数据(?:证据|来源)|完整依赖|判断依据|What-if)/i.test(block)) supplementary = true;
     // Keep the decision itself visible when a model expands every list item into a report.
     const item = /^(\d+[.)、]|[-*])\s+(\*\*[^*]+\*\*)([\s\S]+)$/.exec(block);
     if (!supplementary && role !== "digital_member" && item && block.length > 80) {

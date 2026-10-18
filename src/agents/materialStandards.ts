@@ -3,8 +3,11 @@ import type { MaterialArtifact } from "./materialSchema"
 import { activePlanWbs, registeredDependencyDiagram } from "./materialProjectAssets"
 import { sprintIssueSpreadsheet } from "./materialEvidence"
 import { readableMeeting, readableMinutesMarkdown } from "./meetingPresentation"
+import { scrumMeetingReport } from "./meetingReport"
+import { meetingInsights, meetingOutcomeState } from "./meetingOutcomes"
 
 export function standardMaterialKind(question: string): string | null {
+  if (/智能会议报告|会议洞察报告|站会报告/.test(question)) return "meeting-report"
   if (/老师.*(?:汇报|材料)|汇报材料/.test(question)) return /创作|开放式|全新|独特|故事化/.test(question) ? null : "teacher"
   if (/会议纪要|正式纪要/.test(question)) return "minutes"
   if (/行动项清单/.test(question)) return "actions"
@@ -22,8 +25,19 @@ export function standardMaterialKind(question: string): string | null {
 }
 
 export function standardMaterial(kind: string, state: ProjectDataState, session: MeetingSession, context: MeetingContext): MaterialArtifact {
+  state = meetingOutcomeState(state, session)
   const view = readableMeeting(state, session)
   const doc = (title: string, markdown: string): MaterialArtifact => ({ kind: "document", title, markdown })
+  if (kind === "meeting-report") return doc("Scrum 智能会议报告", scrumMeetingReport(state, session))
+  if (kind === "gantt" && session.demo) {
+    const tasks = Object.values(state.tasks).filter(t => context.focusStoryIds.includes(t.storyId))
+    return { kind: "diagram", title: "交付恢复计划 · 沙盒冻结甘特图", mermaid: `gantt\n  title 会议快照排期（估算，不代表验收完成）\n  dateFormat YYYY-MM-DD\n  axisFormat %m-%d\n${tasks.map((t, n) => `  ${t.title.replace(/[:\n]/g, " ")}（${state.members[t.assigneeId]?.name ?? "待定"}） :${t.status === "done" ? "done," : t.status === "blocked" ? "crit," : ""}t${n}, ${t.startDate}, ${t.endDate}`).join("\n")}` }
+  }
+  if (session.status === "ended" && ["risks", "actions"].includes(kind)) {
+    const i = meetingInsights(state, session)
+    return kind === "risks" ? doc("本次会议阻塞与风险清单", `# 本次会议阻塞与风险清单\n\n${i.issues.map(v => `- ${v.id} ${v.title} · 结束时状态 ${v.status}`).join("\n") || "暂无已记录阻塞对象。"}\n\n${(session.minutes?.openQuestions ?? []).map(v => `- ${v}`).join("\n")}\n\n${session.outcomeSnapshot ? "项目事实采用会议结束快照。" : "历史无快照，当前对象仅作参考。"}`)
+      : doc("本次会议行动项汇总", `# 本次会议行动项汇总\n\n${i.actions.map(a => `## ${a.title}\n\n${a.label} · 建议负责人 ${a.owner} · 日期 ${a.deadline}\n\n${a.reason}\n\nProposal ${a.proposalId} / Action ${a.actionId}；审计 ${a.history.map(h => h.id).join("、") || "暂无"}`).join("\n\n") || "本次暂无明确归属的行动项。"}`)
+  }
   const scope = context.focusStoryIds.map(id => state.stories[id]).filter(Boolean)
   if (kind === "minutes") return doc("正式会议纪要", readableMinutesMarkdown(state, session))
   if (kind === "changes") return doc("本次会议项目变更摘要", `# 本次会议项目变更摘要\n\n${view.changes.join("\n\n")}\n\n${view.actions.filter(action => action.tone !== "done").map(action => `- ${action.title}：${action.status}`).join("\n") || "本次没有其他待处理建议。"}`)

@@ -19,12 +19,16 @@ import {
   Home,
   Images,
   TimerReset,
+  Presentation,
   X,
 } from "lucide-react"
 import { useProjectStore } from "../store/projectStore"
 import { selectPendingProposals, proposalStatusLabel } from "../store/selectors"
 import { exportGanttPng, exportStoryMapPng } from "../utils/exportImage"
 import { MemberAvatar, notify } from "./planning/ui"
+import { useDismissiblePopover } from "../hooks/useDismissiblePopover"
+import MeetingRoom from "./planning/MeetingRoom"
+import { classroomDemoId } from "../agents/meetingClassroomDemo"
 
 const views = [
   { id: "story-map" as const, label: "用户地图", icon: Map },
@@ -82,6 +86,8 @@ export default function CanvasTopBar() {
   const applyProposal = useProjectStore((state) => state.applyProposal)
   const rejectProposal = useProjectStore((state) => state.rejectProposal)
   const [menu, setMenu] = useState<"nav" | "tools" | "notice" | null>(null)
+  const [demoOpen, setDemoOpen] = useState(false)
+  const demo = useProjectStore(s => s.meetingSessions[classroomDemoId])
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [exportingView, setExportingView] = useState<"story-map" | "gantt" | null>(null)
@@ -170,6 +176,8 @@ export default function CanvasTopBar() {
 
   return (
     <header className="relative z-50 flex h-[52px] flex-shrink-0 items-center border-b border-[#E2E7EE] bg-white">
+      {demoOpen && demo && <MeetingRoom initialSessionId={demo.id} initialView="history" onClose={() => setDemoOpen(false)} />}
+      {demo && <button type="button" className="classroom-demo-launch" title="打开置顶的离线会议演示" onClick={() => { setMenu(null); setDemoOpen(true) }}><Presentation size={15} /><span>智能会议演示</span></button>}
       <div className="flex h-full items-center gap-3 border-r border-[#F2F4F7] px-4">
         <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-600 to-violet-600 text-sm font-bold text-white">
           S
@@ -374,7 +382,7 @@ export default function CanvasTopBar() {
               </button>
               <button
                 className="menu-row"
-                onClick={() => importRef.current?.click()}
+                onClick={() => { importRef.current?.click(); setMenu(null) }}
               >
                 <FileUp size={14} />
                 导入项目 JSON
@@ -480,15 +488,14 @@ function Popup({
   width: number
   align?: "left" | "right"
 }) {
+  const popupRef = useDismissiblePopover(true, onClose, true)
   return (
-    <>
-      <div className="fixed inset-0 z-40" onClick={onClose} />
       <div
+        ref={popupRef}
         className="absolute top-full z-50 mt-1.5 overflow-hidden rounded-lg border border-[#E2E7EE] bg-white py-1 shadow-xl"
         style={{ width, [align]: 0 }}
       >
         {children}
       </div>
-    </>
   )
 }

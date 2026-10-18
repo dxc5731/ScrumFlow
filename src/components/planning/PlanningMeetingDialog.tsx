@@ -2,7 +2,7 @@ import { useState } from "react"
 import { Bot, Check, CircleAlert, Play, X } from "lucide-react"
 import { runPlanningMeeting, type MeetingStage } from "../../agents/meeting"
 import { useProjectStore } from "../../store/projectStore"
-import type { ProposalAction } from "../../types"
+import type { ProposalAction, ProjectDataState } from "../../types"
 import Modal from "./Modal"
 
 const statusNames = {
@@ -23,9 +23,10 @@ function showValue(value: unknown) {
 }
 
 export default function PlanningMeetingDialog({
-  open, targetType, targetId, onClose, detailOnly = false, selectedProposalId,
-}: { open: boolean; targetType: "story" | "sprint"; targetId: string; onClose: () => void; detailOnly?: boolean; selectedProposalId?: string | null }) {
-  const state = useProjectStore()
+  open, targetType, targetId, onClose, detailOnly = false, selectedProposalId, snapshot,
+}: { open: boolean; targetType: "story" | "sprint"; targetId: string; onClose: () => void; detailOnly?: boolean; selectedProposalId?: string | null; snapshot?: ProjectDataState }) {
+  const liveState = useProjectStore()
+  const state = detailOnly && snapshot ? { ...liveState, ...snapshot } : liveState
   const [proposalId, setProposalId] = useState<string | null>(null)
   const [stages, setStages] = useState<MeetingStage[]>([])
   const [message, setMessage] = useState("")

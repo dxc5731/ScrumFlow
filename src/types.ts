@@ -1,4 +1,4 @@
-﻿export type Priority = "critical" | "high" | "medium" | "low"
+export type Priority = "critical" | "high" | "medium" | "low"
 export type Status = "todo" | "in-progress" | "review" | "done" | "blocked"
 export type RiskLevel = "high" | "medium" | "low" | "none"
 export type TaskType = "frontend" | "backend" | "database" | "test" | "design" | "devops"
@@ -474,6 +474,8 @@ export interface ProposalAction {
 }
 
 export interface AgentProposal {
+  /** Attribution only; the shared meeting/event origin contract stays unchanged. */
+  sourceMeetingId?: string
   schemaVersion: number
   id: string
   projectId: string
@@ -638,7 +640,73 @@ export interface MeetingWorkingState {
   historyAtStart?: string[]
 }
 
+export type ScrumMeetingType = "daily" | "planning" | "review" | "retrospective"
+export type MeetingHostEventKind = "welcome" | "agenda" | "guide" | "time_warning" | "overtime" | "extended" | "closing" | "topic_deviation" | "sprint_blocker" | "blocker_followup" | "outcome"
+export type MeetingHostChoice = "return" | "continue" | "incorrect" | "analyze" | "defer" | "propose"
+export interface MeetingHostEvent {
+  key: string
+  kind: MeetingHostEventKind
+  sourceMessageIds?: string[]
+  taskIds?: string[]
+  riskIds?: string[]
+  topicSignature?: string
+  assessment?: { basis: "model" | "rules"; reason: string }
+  analysisMessageId?: string
+  resolution?: { choice: MeetingHostChoice; at: string; taskId?: string }
+}
+export interface MeetingHostEventInput {
+  key: string
+  content: string
+  sourceMessageIds?: string[]
+  taskIds?: string[]
+  riskIds?: string[]
+  topicSignature?: string
+  assessment?: MeetingHostEvent["assessment"]
+  analysisMessageId?: string
+  evidence?: string[]
+}
+export interface MeetingManagementState {
+  reviewedThroughMessageId?: string
+  lastReviewedAt?: string
+  lastInterventionAt?: string
+  deviationSuppressedUntil?: string
+  dismissedTopicSignatures?: string[]
+}
+
+export interface MeetingStartOptions {
+  meetingType: ScrumMeetingType
+  sprintId?: string | null
+  demoSpeed?: 1 | 30
+  voiceEnabled?: boolean
+}
+
+export interface MeetingFacilitation {
+  startedAt: string
+  plannedMinutes: number
+  sprintId: string | null
+  demoSpeed: 1 | 30
+  voiceEnabled: boolean
+  actualDurationMs?: number
+  actualOvertimeMs?: number | null
+  demoElapsedMs?: number
+  demoOvertimeMs?: number
+  management?: MeetingManagementState
+}
+
 export interface MeetingSession {
+  pinnedAt?: string | null
+  demo?: {
+    version: 1
+    source: "project-snapshot"
+    sourceCapturedAt: string
+    sourceFingerprint: string
+    recordedEvents: true
+    materialStatus?: "pending" | "ready" | "error"
+    materialsRevision?: number
+    materialError?: string
+    agendaTiming: Array<{ topicId: string; plannedMinutes: number; startedAt: string; endedAt: string }>
+  }
+  outcomeSnapshot?: MeetingOutcomeSnapshot
   id: string
   projectId: string
   targetType: "project" | "story" | "sprint"
@@ -658,6 +726,18 @@ export interface MeetingSession {
   qaTrace?: MeetingQaTrace[]
   presentationMode?: "standard" | "defense"
   narrative?: MeetingNarrative
+  meetingType?: ScrumMeetingType
+  facilitation?: MeetingFacilitation
+}
+
+/** Frozen business facts at close. Only explicitly attributed Proposal follow-ups may advance later. */
+export interface MeetingOutcomeSnapshot {
+  version: 1
+  capturedAt: string
+  sourceProposalIds: string[]
+  context: Pick<ProjectDataState, "project" | "members" | "sprints" | "stories" | "tasks" | "subtasks" | "risks" | "dependencies" | "acceptanceCriteria"> & Partial<Pick<ProjectDataState, "discussions">>
+  proposals: Record<string, AgentProposal>
+  history: ChangeHistoryItem[]
 }
 
 export interface MeetingNarrative {
@@ -689,7 +769,8 @@ export interface MeetingTopic {
   id: string
   title: string
   type: "planning" | "risk" | "workload" | "decision" | "general"
-  status: "active" | "recorded" | "deferred" | "discussed" | "unresolved" | "decided"
+  status: "pending" | "active" | "recorded" | "deferred" | "discussed" | "unresolved" | "decided"
+  agendaKey?: string
   relatedEntityIds: string[]
   relatedAgentTypes: AgentType[]
   createdFromMessageId: string
@@ -722,6 +803,7 @@ export interface MeetingMinutes {
 }
 
 export interface MeetingContext {
+  facilitation?: { meetingType: ScrumMeetingType; name: string; agenda: string; guidance: string }
   digitalMemberId?: string
   meetingId: string
   targetType: MeetingSession["targetType"]
@@ -747,6 +829,8 @@ export interface MeetingContext {
 }
 
 export interface MeetingMessage {
+  inputSource?: "text" | "voice"
+  hostEvent?: MeetingHostEvent
   id: string
   meetingId: string
   senderType: "user" | "agent" | "digital_member" | "system"

@@ -1,4 +1,4 @@
-export type MeetingModelMode = "interpret" | "explain" | "draft_work" | "materials" | "repair_diagram" | "meeting_summary"
+export type MeetingModelMode = "interpret" | "explain" | "draft_work" | "materials" | "repair_diagram" | "meeting_summary" | "host_review"
 export type ReasoningEffort = "none" | "low" | "high" | "max"
 export interface MeetingModelRoute {
   tier: "flash" | "pro"
@@ -42,6 +42,7 @@ export function routeMeetingModel(mode: MeetingModelMode, payload: unknown): Mee
   const constraints = constraintCount(facts)
   const broadScope = count(facts.tasks) >= 8 || count(facts.stories) >= 3 || count(input.eligibleParents) >= 3
   const analytical = analysis.test(question)
+  if (mode === "host_review") return { tier: "flash", effort: "none", reason: "meeting_topic_review", maxTokens: 700, timeoutMs: 12000 }
   if (mode === "meeting_summary") return { ...route(mode, "pro", "low", "whole_meeting_summary"), maxTokens: 9000 }
   if (input.presentationMode === "defense" && mode === "explain") {
     const complex = /权衡|方案\s*[AB].*方案\s*[AB]|机会成本|综合|最小.*调整|关键路径|救一个|晚两天|两天.*区别|阻塞传播|重新规划|约束.*继承|多条件|验收边界|优先级.*依据/.test(question)

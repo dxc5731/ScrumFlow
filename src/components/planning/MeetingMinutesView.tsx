@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 import { ArrowRight, CheckCircle2, ChevronDown, Clock3, FileStack, MessageCircle, ShieldAlert, Sparkles, Users } from "lucide-react"
 import type { ProjectDataState } from "../../types"
 import { readableMeeting } from "../../agents/meetingPresentation"
@@ -7,14 +7,19 @@ import { meetingSourceIds } from "../../agents/meetingSource"
 import { agentName } from "../../agents/meetingConversation"
 import MeetingSourceTrace from "./MeetingSourceTrace"
 import MeetingMaterials from "./MeetingMaterials"
+import MeetingInsights from "./MeetingInsights"
+import MeetingEvidenceCharts from "./MeetingEvidenceCharts"
+import { meetingInsights } from "../../agents/meetingOutcomes"
 import { generatedRecommendationKeys, recommendMeetingMaterials } from "../../agents/materialRecommendations"
 
-export default function MeetingMinutesView({ state, sessionId, onBack, onReview, onEnd, onMaterials, readOnly = false, allowMaterials = !readOnly, closing = false, busy = false, onBusyChange }: {
+export default function MeetingMinutesView({ state, sessionId, onBack, onReview, onEnd, onMaterials, readOnly = false, allowMaterials = !readOnly, closing = false, busy = false, onBusyChange, onLocate, onProposal }: {
   state: ProjectDataState; sessionId: string; onBack: () => void; onReview: () => void; onEnd: () => void
-  readOnly?: boolean; allowMaterials?: boolean; closing?: boolean; busy?: boolean; onBusyChange?: (busy: boolean) => void; onMaterials?: () => void
+  onLocate?: (id: string) => void; onProposal?: (id: string) => void; readOnly?: boolean; allowMaterials?: boolean; closing?: boolean; busy?: boolean; onBusyChange?: (busy: boolean) => void; onMaterials?: () => void
 }) {
+  const [insights, setInsights] = useState(!state.meetingSessions[sessionId]?.demo && state.meetingSessions[sessionId]?.status === "ended")
   const [expanded, setExpanded] = useState(false), [summarizing, setSummarizing] = useState(false), [error, setError] = useState("")
   const session = state.meetingSessions[sessionId], view = readableMeeting(state, session)
+  useEffect(() => { if (session.status === "ended" && !session.demo) setInsights(true) }, [session.status, session.demo])
   const sprint = state.sprints[session.memory?.focusSprintId ?? state.stories[session.targetId]?.sprintId ?? state.workspace.selectedSprintId]
   const trace = (text: string, ids: string[] = []) => <MeetingSourceTrace state={state} ids={meetingSourceIds(state, session, text, ids)}>{text}</MeetingSourceTrace>
   const activeActions = view.actions.filter(a => a.tone !== "rejected")
@@ -35,11 +40,18 @@ export default function MeetingMinutesView({ state, sessionId, onBack, onReview,
     setSummarizing(true); onBusyChange?.(true); setError("")
     try { await ensureMeetingNarrative(sessionId) } catch (cause) { setError(cause instanceof Error ? cause.message : "摘要暂未完成") } finally { setSummarizing(false); onBusyChange?.(false) }
   }
-  const stale = session.narrative && session.narrative.fingerprint !== narrativeFingerprint(state, session)
+  const stale = !session.demo && session.narrative && session.narrative.fingerprint !== narrativeFingerprint(state, session)
+  const evidence = meetingInsights(state, session)
   return <main className="meeting-minutes-view meeting-minutes-readable">
+    <div className="minutes-document-kicker"><span>SCRUMFLOW / MEETING RECORD</span><span>{session.demo ? "沙盒演示归档" : "会议成果归档"}</span></div>
     <div className="meeting-minutes-header"><div><h2>{session.title}</h2><p>{sprint?.name ?? state.project.name} · {new Date(session.createdAt).toLocaleDateString("zh-CN", { month: "long", day: "numeric" })} · {session.status === "ended" ? "会议已结束" : readOnly ? "历史记录 · 未结束" : closing ? "结束前确认" : "会议进行中"}</p></div><button type="button" disabled={summarizing || busy} onClick={onBack}>返回讨论 <ArrowRight size={14} /></button></div>
+    <nav className="meeting-outcome-tabs" aria-label="会议成果视图"><button type="button" aria-pressed={!insights} onClick={() => setInsights(false)}>会议纪要</button><button type="button" aria-pressed={insights} onClick={() => setInsights(true)}>查看会议洞察</button></nav>
+    {insights ? <MeetingInsights state={state} session={session} onLocate={onLocate} onProposal={onProposal} onReview={onReview} busy={busy || summarizing} onBusyChange={onBusyChange} /> : <>
+    <div className="minutes-document-meta"><div><span>参会团队</span><strong>{view.participants.join(" · ")}</strong></div><div><span>审核与执行</span><strong>{evidence.counts.accepted} 项采纳 · {evidence.counts.rejected} 项拒绝 · {evidence.counts.pending} 项待审</strong></div><div><span>记录依据</span><strong>{evidence.messages.length} 条消息 · {evidence.events.length} 次主持事件</strong></div></div>
     <div className="meeting-minutes-metrics"><span><CheckCircle2 size={19} /><strong>{view.applied}</strong> 项已执行</span><span><Clock3 size={19} /><strong>{view.pending}</strong> 项待确认</span><span><ShieldAlert size={19} /><strong>{view.attention.length}</strong> 项需关注</span></div>
-    <section className="meeting-narrative"><div className="meeting-narrative-heading"><h3><Sparkles size={18} />会议摘要</h3>{allowMaterials && (!session.narrative || stale) && <button type="button" disabled={summarizing || busy} onClick={() => void summarize()}>{summarizing ? "正在阅读整场会议…" : stale ? "更新摘要" : "整理完整会议摘要"}</button>}</div><p>{summaryNodes}</p>{session.narrative && <small>根据真实讨论整理 · 下划线内容可悬停溯源</small>}{error && <p role="alert" className="meeting-material-error">{error}</p>}</section>
+    <section className="meeting-narrative"><div className="meeting-narrative-heading"><h3><Sparkles size={18} />会议摘要</h3>{allowMaterials && (!session.narrative || stale) && <button type="button" disabled={summarizing || busy} onClick={() => void summarize()}>{summarizing ? "正在阅读整场会议…" : stale ? "更新摘要" : "整理完整会议摘要"}</button>}</div><p>{summaryNodes}</p>{session.narrative && <small>{session.demo ? "根据演示记录与沙盒审计整理" : "根据真实讨论整理"} · 下划线内容可悬停溯源</small>}{error && <p role="alert" className="meeting-material-error">{error}</p>}</section>
+    <section className="minutes-execution-ledger"><h3><CheckCircle2 size={18} />决策与责任清单</h3><p>从人工审核到写回证据逐项核对。{session.demo ? "以下执行仅发生在演示沙盒。" : ""}登记已执行不代表工程任务已完成。</p><div className="minutes-ledger-scroll"><table><thead><tr><th>行动 / 责任对象</th><th>负责人</th><th>状态</th><th>审计</th></tr></thead><tbody>{evidence.actions.map(a => <tr key={a.actionId}><td><strong>{a.title}</strong><small>{a.reason}</small></td><td>{a.owner}</td><td><span className={`minutes-ledger-status is-${a.bucket}`}>{a.label}</span></td><td><button type="button" onClick={() => onProposal?.(a.proposalId)}>{a.history.length ? `${a.history.length} 条写回` : "查看审核"} ↗</button></td></tr>)}</tbody></table></div></section>
+    <MeetingEvidenceCharts state={state} session={session} />
     <div className="meeting-minutes-reading-grid"><section><h3><CheckCircle2 size={18} />我们已经决定</h3>{view.decisions.length ? view.decisions.slice(0, 2).map((item, index) => <p className="meeting-minutes-decision" key={index}>{trace(item)}</p>) : <p className="meeting-minutes-empty">还没有确认最终决定，下方工作保留为建议。</p>}</section>
       <section><h3><ShieldAlert size={18} />还需要关注</h3>{view.attention.length ? <ul>{view.attention.slice(0, 2).map((item, index) => <li key={index}>{trace(item)}</li>)}</ul> : <p className="meeting-minutes-empty">本次没有新增待核实信息。</p>}</section></div>
     <section><h3><Users size={18} />接下来谁做什么</h3><div className="meeting-readable-actions">{activeActions.slice(0, 3).map(action => <article key={action.id} className={`meeting-readable-action meeting-readable-action--${action.tone}`}><span className="meeting-readable-action-status">{action.tone === "done" ? <CheckCircle2 size={15} /> : <Clock3 size={15} />}{action.status}</span><h4>{trace(action.title, action.sourceMessageIds)}</h4><p>{trace(action.member, action.sourceMessageIds)}{action.estimate !== null ? ` · 约 ${action.estimate}h` : ""}</p></article>)}</div>{!view.actions.length && <p className="meeting-minutes-empty">本次没有正式行动项。</p>}</section>
@@ -53,6 +65,7 @@ export default function MeetingMinutesView({ state, sessionId, onBack, onReview,
       <section className="meeting-minutes-discussion"><h3><MessageCircle size={18} />讨论记录</h3><p>{view.participants.join("、")} · {view.agents.join("、")}</p><div className="meeting-discussion-tags">{view.minutes.topics.map((item, index) => <span key={index}>{item}</span>)}</div><details><summary>查看全部原始讨论与依据</summary>{session.messageIds.map(id => state.meetingMessages[id]).filter(m => m && m.senderType !== "system").map(m => <div className="meeting-minutes-transcript" key={m.id}><strong>{state.members[m.senderId]?.name ?? agentName(m.senderId)}</strong><p>{m.content}</p></div>)}</details></section>
     </div></div>
     <section className="meeting-minutes-assets"><details><summary><FileStack size={18} />本次会议成果 · 查看材料与图表</summary>{view.assetIds.length ? <MeetingMaterials ids={view.assetIds} state={state} /> : <p className="meeting-minutes-empty">生成推荐成果后，就能在这里预览和下载。</p>}</details>{allowMaterials && remaining > 0 && onMaterials && <div className="meeting-material-reminder"><Sparkles size={14} /><span>本次会议还有 {remaining} 项成果可整理</span><button type="button" disabled={summarizing || busy} onClick={onMaterials}>查看建议 →</button></div>}</section>
+    </>}
     {view.pending > 0 && <div className="meeting-minutes-pending"><strong>还有 {view.pending} 项行动需要确认</strong>{!readOnly && session.status === "active" && <><button type="button" disabled={summarizing || busy} onClick={onReview}>继续审核</button>{closing && <button type="button" disabled={summarizing || busy} onClick={onEnd}>保留待处理并结束会议</button>}</>}</div>}
     {!readOnly && closing && session.status === "active" && view.pending === 0 && <button className="meeting-minutes-end" type="button" disabled={summarizing || busy} onClick={onEnd}>确认结束会议</button>}
   </main>

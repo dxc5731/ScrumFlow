@@ -26,10 +26,18 @@ The event side must call the same proposal review and executor. It must not writ
 
 The meeting QA browser session is isolated from user persistence. QA records are files, not project meeting history. A live meeting is stored only when created through the normal project store.
 
-## Implementation boundary checked on 2026-10-08
+## Historical boundary checked on 2026-10-08 (superseded by the acceptance note below)
 
 - The original two-person allocation separated a meeting workflow from an event/operations workflow. Later user requests explicitly expanded the meeting side to include digital members and the meeting material center. Meeting material generation is implemented; it is not an empty event-side placeholder.
 - `project_monitor`, `collaboration_notification`, and `contribution_insight` currently have lightweight deterministic answers inside `meetingConversation.ts`. These read existing project facts. They are not complete event Agents: they do not implement automatic event scanning, notification delivery, or an independent contribution-insights workflow.
 - Event-origin Proposal types and the common review/executor/history contract are available. No event-origin Proposal producer or standalone global pending-proposal center is currently implemented in this checkout. A teammate should reuse the shared contract rather than add another executor.
 - The existing top-bar notification popup is a basic planning reminder, including a static dependency count. It is not evidence that the collaboration notification Agent is integrated.
 - Material generators, analysis services, and the executor can be reused by the event workflow. This note describes current implementation and does not reassign the teammate's ownership.
+
+## Current integration verified on 2026-10-18
+
+- `useEventMonitor` is mounted by `App`: after hydration it reconciles detected project events, batches relevant project changes, and checks date changes once a minute. `projectEvents` persists lifecycle state and the matching event-origin Proposal ID.
+- `EventInsightPanel` is a real producer of `origin: "event"` proposals, with `eventBasis` preconditions. It uses the shared human review, `applyProposal`, Store Actions and linked ChangeHistory. `CanvasTopBar` exposes the existing pending-proposal center. The old absence statements above describe the earlier checkout only.
+- Meeting blocker entry reuses `detectProjectEvents`, risk analysis and the dependency graph. It proposes an existing risk mitigation update or a task discussion, with `origin: "meeting"`. Exact matching follow-up suggestions may reuse an existing meeting/event Proposal; origin is preserved. Only explicitly attributed `sourceMeetingId` actions count as that meeting's outcomes; linked external suggestions remain visible as references.
+- This is shared detection, Proposal, review, executor and audit integration. A meeting's mitigation update does **not** automatically resolve the task's dependency event, and there is no claim that every meeting risk has a bidirectional event-record link or that collaboration notifications are a complete delivery service. Risk follow-up and actual unblocking are distinct facts.
+- Final acceptance evidence, remaining boundaries and device-audio checks are recorded in `docs/SCRUM_MEETING_FINAL_ACCEPTANCE.md`. No frozen origin or execution contract was replaced by the meeting upgrades.

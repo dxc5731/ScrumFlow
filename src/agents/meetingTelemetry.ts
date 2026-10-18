@@ -1,6 +1,6 @@
 export interface MeetingLlmTelemetry {
   requestId: string
-  requestType: "interpret" | "explain" | "draft_work" | "materials" | "repair_diagram" | "meeting_summary"
+  requestType: "interpret" | "explain" | "draft_work" | "materials" | "repair_diagram" | "meeting_summary" | "host_review"
   model: string
   latencyMs: number
   success: boolean

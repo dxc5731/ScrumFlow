@@ -54,6 +54,7 @@ import AssetAssociationPicker from "./AssetAssociationPicker"
 import StoryAcceptancePanel from "./StoryAcceptancePanel"
 import EventInsightPanel from "./EventInsightPanel"
 import MeetingRoom from "./MeetingRoom"
+import MeetingSetup from "./MeetingSetup"
 import { FieldLabel, MemberAvatar, notify } from "./ui"
 
 const tabs: { id: InspectorTab; label: string }[] = [
@@ -166,6 +167,8 @@ function StoryInspector({
 }) {
   const state = useProjectStore()
   const [meetingId, setMeetingId] = useState<string | null>(null)
+  const [meetingSetup, setMeetingSetup] = useState(false)
+  const [announceWelcome, setAnnounceWelcome] = useState(false)
   const recentMeeting = Object.values(state.meetingSessions)
     .filter((item) => item.targetType === "story" && item.targetId === story.id)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
@@ -243,7 +246,8 @@ function StoryInspector({
 
   return (
     <>
-      {meetingId && <MeetingRoom key={meetingId} initialSessionId={meetingId} onClose={() => setMeetingId(null)} />}
+      {meetingSetup && <MeetingSetup targetType="story" targetId={story.id} onClose={() => setMeetingSetup(false)} onStart={id => { setMeetingSetup(false); setAnnounceWelcome(true); setMeetingId(id) }} />}
+      {meetingId && <MeetingRoom key={meetingId} announceWelcome={announceWelcome} initialSessionId={meetingId} onClose={() => setMeetingId(null)} />}
       <div className="border-b border-[#EAECF0]">
         <div className="flex items-center gap-2 px-4 pb-2 pt-4">
           <span className="rounded bg-[#F4F3FF] px-2 py-0.5 font-mono text-[10px] font-bold text-[#6941C6]">
@@ -294,8 +298,8 @@ function StoryInspector({
           />
         </div>
         {state.workspace.actorMode === "po" && <div className="flex flex-wrap gap-2 px-4 pb-3">
-          <button className="secondary-button" onClick={() => setMeetingId(state.createMeeting("story", story.id).id)}><Bot size={13} /> 发起 AI 项目会议</button>
-          {recentMeeting && <button className="secondary-button" onClick={() => setMeetingId(recentMeeting.id)}><Clock3 size={13} /> {recentMeeting.status === "active" ? "继续会议" : "查看会议记录"}</button>}
+          <button className="secondary-button" onClick={() => setMeetingSetup(true)}><Bot size={13} /> 发起 AI 项目会议</button>
+          {recentMeeting && <button className="secondary-button" onClick={() => { setAnnounceWelcome(false); setMeetingId(recentMeeting.id) }}><Clock3 size={13} /> {recentMeeting.status === "active" ? "继续会议" : "查看会议记录"}</button>}
         </div>}
         <div className="flex items-center gap-2 px-4 pb-3">
           <StatusSelect story={story} onChange={saveStory} />

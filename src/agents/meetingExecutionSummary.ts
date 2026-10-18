@@ -41,6 +41,12 @@ function actionDescription(state: ProjectDataState, action: ProposalAction): str
     const risk = state.risks[resultId]
     return risk ? `${action.actionType === "CREATE_RISK" ? "登记" : "调整"}风险「${risk.title}」` : "风险记录未找到"
   }
+  if (action.actionType === "CREATE_DISCUSSION") {
+    const discussion = state.discussions[resultId]
+    const target = discussion?.targetType === "task" ? state.tasks[discussion.targetId]?.title
+      : discussion?.targetType === "story" ? state.stories[discussion.targetId]?.title : state.project.name
+    return `登记「${target ?? action.targetId}」的跟进讨论`
+  }
   return `调整 Story「${state.stories[resultId]?.title ?? "项目安排"}」`
 }
 

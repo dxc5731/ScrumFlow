@@ -17,8 +17,16 @@ import {
 import { useProjectStore } from "./store/projectStore";
 import { useEventMonitor } from "./hooks/useEventMonitor";
 import LocalSaveStatus from "./components/planning/LocalSaveStatus";
+import { useEffect } from "react";
+import { ensureClassroomDemo } from "./agents/meetingClassroomDemo";
 
 export default function App() {
+  useEffect(() => {
+    const prepare = () => { void ensureClassroomDemo().catch(error => console.error("演示会议准备失败", error)) }
+    const unsubscribe = useProjectStore.persist.onFinishHydration(prepare)
+    if (useProjectStore.persist.hasHydrated()) prepare()
+    return unsubscribe
+  }, [])
   useEventMonitor();
   const workspace = useProjectStore((state) => state.workspace);
   const planningPage = ["story-map", "gantt", "board"].includes(workspace.currentPage);

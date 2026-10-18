@@ -31,6 +31,7 @@ import {
 import type { DailyActualWorkloadDetail } from "../store/selectors"
 import { MemberAvatar, notify } from "../components/planning/ui"
 import MeetingRoom from "../components/planning/MeetingRoom"
+import MeetingSetup from "../components/planning/MeetingSetup"
 
 function PageShell({
   title,
@@ -87,6 +88,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 export function OverviewPage() {
   const state = useProjectStore()
   const [meetingId, setMeetingId] = useState<string | null>(null)
+  const [meetingSetup, setMeetingSetup] = useState(false)
+  const [announceWelcome, setAnnounceWelcome] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [meetingView, setMeetingView] = useState<"live" | "history">("live")
   const recentMeeting = Object.values(state.meetingSessions).filter((item) => item.targetType === "project" && item.targetId === state.project.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
@@ -97,8 +100,9 @@ export function OverviewPage() {
   const recentImpacts = state.impactAnalyses.slice(-5).reverse()
   const risks = selectActiveRisks(state).slice(0, 5)
   return (
-    <PageShell title="项目概览" description={`${state.project.goal} · ${state.project.startDate} 至 ${state.project.endDate}`} icon={Gauge} actions={<><button className="secondary-button" onClick={() => { setHistoryOpen(false); setMeetingView("live"); setMeetingId(state.createMeeting("project", state.project.id).id) }}><Bot size={14} /> 发起项目会议</button><button className="secondary-button" disabled={!recentMeeting} onClick={() => { setHistoryOpen(true); setMeetingView("history"); setMeetingId(recentMeeting.id) }}><Clock3 size={14} /> 历史会议</button>{recentMeeting && <button className="secondary-button" onClick={() => { setHistoryOpen(false); setMeetingView("history"); setMeetingId(recentMeeting.id) }}><Clock3 size={14} /> 查看最近会议</button>}</>}>
-      {meetingId && <MeetingRoom key={meetingId} initialView={meetingView} initialHistoryOpen={historyOpen} initialSessionId={meetingId} onClose={() => setMeetingId(null)} />}
+    <PageShell title="项目概览" description={`${state.project.goal} · ${state.project.startDate} 至 ${state.project.endDate}`} icon={Gauge} actions={<><button className="secondary-button" onClick={() => { setMeetingSetup(true) }}><Bot size={14} /> 发起项目会议</button><button className="secondary-button" disabled={!recentMeeting} onClick={() => { setAnnounceWelcome(false); setHistoryOpen(true); setMeetingView("history"); setMeetingId(recentMeeting.id) }}><Clock3 size={14} /> 历史会议</button>{recentMeeting && <button className="secondary-button" onClick={() => { setAnnounceWelcome(false); setHistoryOpen(false); setMeetingView("history"); setMeetingId(recentMeeting.id) }}><Clock3 size={14} /> 查看最近会议</button>}</>}>
+      {meetingSetup && <MeetingSetup targetType="project" targetId={state.project.id} onClose={() => setMeetingSetup(false)} onStart={id => { setMeetingSetup(false); setHistoryOpen(false); setMeetingView("live"); setAnnounceWelcome(true); setMeetingId(id) }} />}
+      {meetingId && <MeetingRoom key={meetingId} announceWelcome={announceWelcome} initialView={meetingView} initialHistoryOpen={historyOpen} initialSessionId={meetingId} onClose={() => setMeetingId(null)} />}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Metric label="整体交付进度" value={`${completion.percent}%`} detail={`${completion.acceptedPoints}/${completion.totalPoints} Story Points 已验收`} />
         <Metric label="已交付业务价值" value={`${release.valueRate}%`} detail={`${release.deliveredValue}/${release.totalValue} 价值点`} tone="success" />

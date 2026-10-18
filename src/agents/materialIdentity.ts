@@ -5,7 +5,7 @@ export function meetingArtifactMetadata(asset: DesignAssetEntity): MeetingArtifa
   try { return JSON.parse(asset.sourceText)?._meeting ?? null } catch { return null }
 }
 export function materialIdentityScope(key: string, context: MeetingContext): string {
-  if (["minutes", "teacher-overview", "actions", "changes", "zip"].includes(key)) return "meeting"
+  if (["minutes", "teacher-overview", "actions", "changes", "zip", "meeting-report"].includes(key)) return "meeting"
   if (key === "storymap") return "project"
   if (["gantt", "excel", "risks"].includes(key)) return context.focusSprintId ?? "project"
   return [...context.focusStoryIds].sort().join(",") || context.focusSprintId || "project"
@@ -13,7 +13,7 @@ export function materialIdentityScope(key: string, context: MeetingContext): str
 export function materialFamilyId(asset: DesignAssetEntity): string {
   const meta = meetingArtifactMetadata(asset)
   if (!meta) return asset.name.replace(/\.[^.]+$/, "")
-  const scope = meta.scope ?? (["minutes", "teacher-overview", "actions", "changes", "zip"].includes(meta.key) ? "meeting"
+  const scope = meta.scope ?? (["minutes", "teacher-overview", "actions", "changes", "zip", "meeting-report"].includes(meta.key) ? "meeting"
     : meta.key === "storymap" ? "project" : ["gantt", "excel", "risks"].includes(meta.key) ? asset.links.find(l => l.targetType === "sprint")?.targetId ?? "project"
     : asset.links.filter(l => l.targetType === "story").map(l => l.targetId).sort().join(",") || asset.links.find(l => l.targetType === "sprint")?.targetId || "project")
   let key = meta.key

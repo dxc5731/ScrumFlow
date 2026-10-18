@@ -1,5 +1,6 @@
 import { meetingEntities } from "./meetingContext"
 import { buildExecutionSummary } from "./meetingExecutionSummary"
+import { actionOutcome, meetingOutcomeState, meetingOwnedProposals } from "./meetingOutcomes"
 import type { AgentType, MeetingFact, MeetingMemory, MeetingMessage, MeetingMinutes, MeetingSession, MeetingTopic, ProjectDataState } from "../types"
 
 const topicNames: Record<string, string> = {
@@ -16,7 +17,7 @@ export function recordMeetingTopic(session: MeetingSession, message: MeetingMess
   const title = `${scope?.toUpperCase() ?? "项目"} · ${topicNames[kind]}`
   const current = topics.find((topic) => topic.title === title)
   const deferred = /先不改|暂缓|先保留|暂不调整|等.*确认/.test(message.content)
-  const previous = topics.map((topic) => topic.status === "active" && topic.id !== current?.id
+  const previous = topics.map((topic) => !topic.agendaKey && topic.status === "active" && topic.id !== current?.id
     ? { ...topic, status: deferred ? "deferred" as const : "recorded" as const } : topic)
   if (current) return previous.map((topic) => topic.id === current.id ? {
     ...topic, status: deferred ? "deferred" as const : kind === "execute" && memory.decisionSummary && !/待选|继续核对|正在评估/.test(memory.decisionSummary)
@@ -52,7 +53,7 @@ export function topicFromMeetingFact(session: MeetingSession, fact: MeetingFact)
   const scope = fact.relatedEntityIds[0] ?? session.memory?.focusStoryIds.at(-1) ?? "项目"
   const title = `${scope.toUpperCase()} · 排期待核实`
   if (topics.some((topic) => topic.title === title)) return topics
-  return [...topics.map((topic) => topic.status === "active" ? { ...topic, status: "recorded" as const } : topic), {
+  return [...topics.map((topic) => !topic.agendaKey && topic.status === "active" ? { ...topic, status: "recorded" as const } : topic), {
     id: `topic-${fact.sourceMessageId}`, title, type: "risk", status: "unresolved",
     relatedEntityIds: fact.relatedEntityIds, relatedAgentTypes: [], createdFromMessageId: fact.sourceMessageId,
   }]
@@ -75,17 +76,12 @@ export function describeHypothesisImpact(state: ProjectDataState, session: Meeti
     : "我先把这条发言记为待核实的排期假设，正式计划未变。确认涉及的任务后，可以再检查依赖与成员容量。"
 }
 
-function actionStatus(status: string, decision: string) {
-  if (status === "applied") return "已执行"
-  if (status === "failed") return "执行失败"
-  if (status === "stale") return "已失效"
-  return decision === "accepted" ? "已采纳，待执行" : decision === "rejected" ? "已拒绝" : "待审核"
-}
-
 export function generateMeetingMinutes(state: ProjectDataState, session: MeetingSession): MeetingMinutes {
+  state = meetingOutcomeState(state, session)
   const messages = session.messageIds.map((id) => state.meetingMessages[id]).filter(Boolean)
   const proposals = session.proposalIds.map((id) => state.proposals[id]).filter(Boolean)
-  const execution = buildExecutionSummary(state, proposals)
+  const owned = meetingOwnedProposals(state, session)
+  const execution = buildExecutionSummary(state, owned)
   const topics = session.topics ?? []
   const facts = session.facts ?? []
   const entityIds = new Set([...topics.flatMap((topic) => topic.relatedEntityIds), ...facts.flatMap((fact) => fact.relatedEntityIds)])
@@ -97,6 +93,8 @@ export function generateMeetingMinutes(state: ProjectDataState, session: Meeting
     if (story) keyFacts.push(`${id.toUpperCase()}「${story.title}」现有 ${story.taskIds.length} 个任务，属于 ${state.sprints[story.sprintId ?? ""]?.name ?? "未安排 Sprint"}。`)
   }
   const actions = proposals.flatMap((proposal) => proposal.actions.map((action) => {
+    const outcome = actionOutcome(state, proposal, action)
+    const attributed = owned.some(p => p.id === proposal.id)
     const value = action.proposedValue
     const taskName = (id: string) => state.tasks[id]?.title ?? proposal.actions.find((item) => item.id === id && item.actionType === "CREATE_TASK")?.proposedValue.title ?? "待创建任务"
     const title = action.actionType === "ADD_DEPENDENCY"
@@ -106,7 +104,7 @@ export function generateMeetingMinutes(state: ProjectDataState, session: Meeting
       : action.actionType === "ADD_DEPENDENCY" ? "添加依赖" : action.actionType === "CREATE_RISK" ? "登记风险" : "调整安排"
     const owner = typeof value.assigneeId === "string" ? state.members[value.assigneeId]?.name : null
     return { title: `${verb}：${title}`, detail: [owner ? `负责人 ${owner}` : "", typeof value.estimate === "number" ? `预计 ${value.estimate}h` : ""].filter(Boolean).join(" · "),
-      status: actionStatus(action.status, action.decision), sourceMessageIds: [...new Set([
+      status: `${attributed ? "" : "关联建议 · "}${outcome.executed ? "已执行" : outcome.bucket === "pending" ? "待审核" : outcome.label === "已采纳 · 待执行" ? "已采纳，待执行" : outcome.label}`, sourceMessageIds: [...new Set([
         ...messages.filter(message => message.proposalId === proposal.id).map(message => message.id),
         ...(session.qaTrace ?? []).filter(trace => trace.proposalId === proposal.id).map(trace => trace.messageId),
       ])] }
@@ -128,8 +126,8 @@ export function generateMeetingMinutes(state: ProjectDataState, session: Meeting
     .map((fact) => fact.status === "confirmed"
       ? `会议已确认“${fact.content}”，需检查后续任务和排期。`
       : `如果“${fact.content}”得到确认，需要重新检查后续任务和排期。`)
-  const executedStoryIds = [...new Set(proposals.flatMap((proposal) => proposal.actions)
-    .filter((action) => action.status === "applied" && ["CREATE_TASK", "UPDATE_TASK", "CREATE_SUBTASK", "UPDATE_SUBTASK"].includes(action.actionType))
+  const executedStoryIds = [...new Set(owned.flatMap((proposal) => proposal.actions.filter(action => actionOutcome(state, proposal, action).executed))
+    .filter((action) => ["CREATE_TASK", "UPDATE_TASK", "CREATE_SUBTASK", "UPDATE_SUBTASK"].includes(action.actionType))
     .map((action) => action.targetType === "story" ? action.targetId : state.tasks[action.targetId]?.storyId ?? state.tasks[action.resultTargetId ?? ""]?.storyId)
     .filter((id): id is string => Boolean(id && state.stories[id])))]
   const executedTopics = executedStoryIds.map((id) => {
@@ -144,10 +142,10 @@ export function generateMeetingMinutes(state: ProjectDataState, session: Meeting
       ? `本次会议讨论了${[...otherTopics, ...executedTopics].join("、")}。` : "本次会议尚未形成正式议题。",
     facts.some((fact) => fact.type === "hypothesis" && fact.status === "unverified")
       ? `有 ${facts.filter((fact) => fact.type === "hypothesis" && fact.status === "unverified").length} 项会议假设待核实，未直接改变项目计划。` : "",
-    `${execution.headline}。${execution.notExecuted.length ? `${execution.notExecuted.length} 项建议经人工拒绝。` : ""}`,
+    `${execution.headline}。${owned.flatMap(p => p.actions).filter(a => a.decision === "rejected").length ? `${owned.flatMap(p => p.actions).filter(a => a.decision === "rejected").length} 项建议经人工拒绝。` : ""}`,
     execution.discrepancies.length ? "执行记录与项目数据存在待复核差异。" : "",
   ].filter(Boolean)
-  return { generatedAt: new Date().toISOString(), executiveSummary, topics: topics.map((topic) => `${topic.title} · ${topic.status === "decided" ? "已决定" : topic.status === "active" ? "讨论中" : topic.status === "unresolved" ? "待核实" : topic.status === "deferred" ? "已暂缓" : "已记录"}`),
+  return { generatedAt: new Date().toISOString(), executiveSummary, topics: topics.map((topic) => `${topic.title} · ${topic.status === "pending" ? "未开始" : topic.status === "discussed" ? "已讨论" : topic.status === "decided" ? "已决定" : topic.status === "active" ? "讨论中" : topic.status === "unresolved" ? "待核实" : topic.status === "deferred" ? "已暂缓" : "已记录"}`),
     keyFacts: [...new Set(keyFacts)], hypotheses: [...new Set(hypotheses)], decisions: [...new Set(decisions)],
     deferred: [...new Set(deferred)], actions, executionResults, openQuestions, risks,
     relatedEntities: [...entityIds].map((id) => {

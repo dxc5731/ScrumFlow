@@ -1,6 +1,7 @@
 import type { MeetingSession, ProjectDataState } from "../types"
 import { meetingArtifactMetadata, materialIdentityScope } from "./materialIdentity"
 import { buildMeetingContext } from "./meetingContext"
+import { meetingInsights } from "./meetingOutcomes"
 
 export function generatedRecommendationKeys(state: ProjectDataState, session: MeetingSession): Set<string> {
   const context = buildMeetingContext(state, session)
@@ -49,6 +50,14 @@ export function meetingMaterialMoment(state: ProjectDataState, session: MeetingS
 
 export interface MaterialRecommendation { key: string; title: string; description: string; question: string }
 export function recommendMeetingMaterials(state: ProjectDataState, session: MeetingSession): MaterialRecommendation[] {
+  if (session.status === "ended") {
+    const i = meetingInsights(state, session)
+    return [
+      { key: "meeting-report", title: "Scrum 智能会议报告", description: "汇总量化图表对应数据、AI 干预和执行审计。", question: "生成 Scrum 智能会议报告" },
+      ...(i.issues.length ? [{ key: "risks", title: "本次阻塞与风险清单", description: "保留结束时记录的阻塞对象与待核实问题。", question: "生成本次会议阻塞清单" }] : []),
+      ...(i.actions.length ? [{ key: "actions", title: "本次会议行动项汇总", description: "明确区分待确认、已采纳和实际写回。", question: "生成行动项清单" }] : []),
+    ]
+  }
   const traces = session.qaTrace ?? []
   const topics = session.topics ?? []
   const substantive = session.messageIds.map(id => state.meetingMessages[id]).filter(message => message &&

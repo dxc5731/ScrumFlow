@@ -23,7 +23,7 @@ export interface MeetingLlm {
   draftWork?(payload: unknown): Promise<string | null>
 }
 
-export async function requestMeetingModel(mode: MeetingLlmTelemetry["requestType"], payload: unknown, required = false, requestId = crypto.randomUUID()): Promise<string | null> {
+export async function requestMeetingModel(mode: MeetingLlmTelemetry["requestType"], payload: unknown, required = false, requestId = crypto.randomUUID(), signal?: AbortSignal): Promise<string | null> {
   const start = performance.now()
   let recorded = false
   const record = (success: boolean, fallbackReason: string | null, model = "unknown", retryCount = 0,
@@ -35,7 +35,7 @@ export async function requestMeetingModel(mode: MeetingLlmTelemetry["requestType
   try {
     const response = await fetch("/api/meeting-llm", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode, payload, requestId }), signal: AbortSignal.timeout(mode === "materials" || mode === "repair_diagram" ? 370_000 : mode === "interpret" ? 45_000 : 250_000),
+      body: JSON.stringify({ mode, payload, requestId }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(mode === "host_review" ? 15000 : 250000)]) : AbortSignal.timeout(mode === "host_review" ? 15000 : mode === "materials" || mode === "repair_diagram" ? 370_000 : mode === "interpret" ? 45_000 : 250_000),
     })
     const result = await response.json() as { content?: string; model?: string; retryCount?: number; errorCode?: string; error?: string;
       routing?: { tier: "flash" | "pro"; effort: "none" | "low" | "high" | "max"; reason: string }; usage?: MeetingLlmTelemetry['usage']; estimatedCny?: number; metrics?: Record<string, unknown> }
@@ -148,7 +148,7 @@ export const meetingLlm: MeetingLlm = {
       relevantMessages = transcript.filter(message => related.has(message.id))
     }
     const content = await requestMeetingModel("explain", { question, baseline, facts, intent: context.currentTopic,
-      meetingId: context.meetingId, presentationMode: defense ? "defense" : "standard",
+      meetingId: context.meetingId, presentationMode: defense ? "defense" : "standard", facilitation: context.facilitation,
       speaker: context.lastAnalysis.startsWith("数字成员：") ? context.lastAnalysis : context.lastAgentType, projectFacts: compact,
       recentMessages: relevantMessages.map(item => ({ role: item.senderType, senderId: item.senderId, content: item.content.slice(0, 700) })) }, false, requestId)
     const reject = (errors:string[]=['response_consistency']) => {

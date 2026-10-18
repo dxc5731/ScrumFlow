@@ -358,12 +358,14 @@ async function coordinateResolvedTurn(
     const humanClaim = whatIfDelay ? context.recentMessages.slice(0, -1).reverse().find((message) => message.senderType === "user" && /可能.{0,8}(晚|延期)|要晚/.test(message.content)) : null
     const hypothesisAlreadyExplained = context.recentMessages.slice(0, -1).some((message) => message.senderType === "agent" && /假设.*正式日期未变|假设分析.*正式日期未变/.test(message.content))
     const claimedDelay = humanClaim && /晚一天|延迟一天|延期一天/.test(humanClaim.content) ? 1 : humanClaim && /晚两天|延期两天/.test(humanClaim.content) ? 2 : 0
-    const risk = dependencyImpact(state, analysisSession!, memory, turn.referencedTaskKeys[0] ?? memory.focusTaskIds[0] ?? null,
+    const baseRisk = analyzeMeetingAgent(state, analysisSession!, "risk_dependency", question)
+    // Sprint 站会的整体阻塞查询复用范围汇总；单任务和 What-if 仍沿用依赖链分析。
+    const sprintOverview = analysisSession?.targetType === "sprint" && !selectedTask && !turn.referencedTaskKeys.length && !whatIfDelay && !turn.removeDependency && !/提前/.test(question)
+    const risk = sprintOverview ? { content: baseRisk.content, evidence: [] } : dependencyImpact(state, analysisSession!, memory, turn.referencedTaskKeys[0] ?? memory.focusTaskIds[0] ?? null,
       whatIfDelay ? turn.delayDays ?? claimedDelay : 0, snapshot,
       { removeDependency: turn.removeDependency, targetTitle: question.match(/(接口|甘特|验证|测试|后端|前端)/)?.[1],
         direction: /前置依赖|入边/.test(question) ? "incoming" : "outgoing",
         earlyDays: /提前.{0,6}(完成|一天|两天)/.test(question) ? 1 : 0 })
-    const baseRisk = analyzeMeetingAgent(state, analysisSession!, "risk_dependency", question)
     evidence = [...risk.evidence, ...baseRisk.evidence]
     if (humanClaim) evidence.unshift(`会议成员提出的待核实信息：${humanClaim.content}`)
     rawEvidence = baseRisk.rawEvidence
