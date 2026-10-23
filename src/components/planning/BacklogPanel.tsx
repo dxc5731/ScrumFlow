@@ -1,3 +1,5 @@
+import ReleaseAssignmentButton from "./ReleaseAssignmentButton";
+import { matchesRelease } from "../../store/release";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, GripVertical, Maximize2, Minimize2, Plus, Search, Sparkles } from "lucide-react";
 import type { AcceptanceCriterion, EpicEntity, Member, Priority, RiskLevel, SprintEntity, StoryEntity, StoryMaturityStatus, StorySource } from "../../types";
@@ -40,6 +42,7 @@ function BacklogStoryCard({
   onSetMaturity: (maturity: StoryMaturityStatus) => ActionResult
   onReorder: (draggedId: string) => ActionResult
 }) {
+  const releases = useProjectStore(state => state.releases)
   const [title, setTitle] = useState(story.title)
   useEffect(() => setTitle(story.title), [story.title])
   const sourceMeta = SOURCE_META[story.source]
@@ -147,11 +150,14 @@ function BacklogStoryCard({
         </>}
       </div>}
       {story.maturityStatus !== "ready" && <button className="mt-2 flex items-center gap-1 text-[10px] font-medium text-[#6941C6]" onClick={(event) => { event.stopPropagation(); const result = onSetMaturity("ready"); notify(result.ok ? "Story 已标记 Ready" : `${result.message}（缺少：${issues.join("、")}）`, result.ok ? "success" : "error") }}>{issues.length ? <Sparkles size={11} /> : <Check size={11} />}标记 Ready</button>}
+      <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[#F2F4F7] pt-2" onClick={stop}><span className="min-w-0 flex-1 text-[9px] text-[#667085]">{releases[story.releaseId ?? ""]?.name ?? "未分配 Release"}{story.isReleaseCore ? " · 核心" : ""}</span><ReleaseAssignmentButton storyIds={[story.id]} label="分配版本"/></div>
     </article>
   )
 }
 
 export default function BacklogPanel() {
+  const releases = useProjectStore(state => state.releases);
+  const [releaseFilter,setReleaseFilter] = useState("all");
   const stories = useProjectStore((state) => state.stories);
   const epics = useProjectStore((state) => state.epics);
   const sprints = useProjectStore((state) => state.sprints);
@@ -173,7 +179,7 @@ export default function BacklogPanel() {
   const [sprintFilter, setSprintFilter] = useState("all");
   const [assigneeFilter, setAssigneeFilter] = useState("all");
   const [riskFilter, setRiskFilter] = useState<RiskLevel | "all">("all");
-  const [groupBy, setGroupBy] = useState<"none" | "epic" | "maturity" | "source" | "sprint">("none");
+  const [groupBy, setGroupBy] = useState<"none" | "epic" | "maturity" | "source" | "sprint" | "release">("none");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [expandedStoryIds, setExpandedStoryIds] = useState<string[]>([]);
   const [bulkSprint, setBulkSprint] = useState(workspace.selectedSprintId);
@@ -194,6 +200,7 @@ export default function BacklogPanel() {
     const priorityRank = { critical: 4, high: 3, medium: 2, low: 1 };
     const sourceStories = widePanel ? selectStories(useProjectStore.getState()) : selectBacklogStories(useProjectStore.getState());
     return sourceStories.filter((story) => {
+      if (!matchesRelease(story, releaseFilter)) return false;
       if (search && !`${story.id} ${story.title}`.toLowerCase().includes(search.toLowerCase())) return false;
       if (source !== "all" && story.source !== source) return false;
       if (maturity !== "all" && story.maturityStatus !== maturity) return false;
@@ -203,21 +210,21 @@ export default function BacklogPanel() {
       if (fullscreen && riskFilter !== "all" && selectStoryRiskLevel(useProjectStore.getState(), story.id) !== riskFilter) return false;
       return true;
     }).sort((a, b) => sortBy === "priority" ? priorityRank[b.priority] - priorityRank[a.priority] : sortBy === "value" ? b.businessValue - a.businessValue : sortBy === "points" ? b.storyPoints - a.storyPoints : sortBy === "title" ? a.title.localeCompare(b.title, "zh-CN") : a.order - b.order);
-  }, [stories, search, source, maturity, sortBy, widePanel, fullscreen, epicFilter, sprintFilter, assigneeFilter, riskFilter]);
+  }, [stories, releaseFilter, search, source, maturity, sortBy, widePanel, fullscreen, epicFilter, sprintFilter, assigneeFilter, riskFilter]);
 
   const backlogGroups = useMemo(() => {
     if (!fullscreen || groupBy === "none") return [{ key: "all", label: "全部 Story", stories: backlog }];
     const groups = new Map<string, StoryEntity[]>();
     backlog.forEach((story) => {
-      const key = groupBy === "epic" ? story.epicId ?? "none" : groupBy === "maturity" ? story.maturityStatus : groupBy === "source" ? story.source : story.sprintId ?? "backlog";
+      const key = groupBy === "release" ? story.releaseId ?? "unassigned" : groupBy === "epic" ? story.epicId ?? "none" : groupBy === "maturity" ? story.maturityStatus : groupBy === "source" ? story.source : story.sprintId ?? "backlog";
       groups.set(key, [...(groups.get(key) ?? []), story]);
     });
     return [...groups.entries()].map(([key, groupStories]) => ({
       key,
-      label: groupBy === "epic" ? epics[key]?.title ?? "未分配 Epic" : groupBy === "maturity" ? MATURITY_META[key as StoryMaturityStatus].label : groupBy === "source" ? SOURCE_META[key as StorySource].label : key === "backlog" ? "Product Backlog" : sprints[key]?.name ?? "未知 Sprint",
+      label: groupBy === "release" ? releases[key]?.name ?? "未分配 Release" : groupBy === "epic" ? epics[key]?.title ?? "未分配 Epic" : groupBy === "maturity" ? MATURITY_META[key as StoryMaturityStatus].label : groupBy === "source" ? SOURCE_META[key as StorySource].label : key === "backlog" ? "Product Backlog" : sprints[key]?.name ?? "未知 Sprint",
       stories: groupStories,
     }));
-  }, [backlog, fullscreen, groupBy, epics, sprints]);
+  }, [backlog, fullscreen, groupBy, epics, sprints, releases]);
 
   const startResize = (event: React.PointerEvent) => {
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -287,16 +294,12 @@ export default function BacklogPanel() {
     notify("Story 草稿已创建，请在 Inspector 中补全三段式描述");
   };
 
+  const eligibleSprints = Object.values(sprints).filter(sprint => sprint.status !== "closed" && selectedIds.length > 0 && selectedIds.every(id => Boolean(stories[id]?.releaseId) && stories[id].releaseId === sprint.releaseId));
+  const targetSprint = eligibleSprints.some(sprint=>sprint.id===bulkSprint) ? bulkSprint : eligibleSprints[0]?.id ?? "";
   const bulkAdd = () => {
-    let success = 0;
-    let failed = 0;
-    selectedIds.forEach((id) => {
-      const story = stories[id];
-      const result = story ? moveStory(id, story.epicId, bulkSprint) : { ok: false };
-      result.ok ? success++ : failed++;
-    });
-    setSelectedIds([]);
-    notify(`${success} 个 Story 已加入 Sprint${failed ? `，${failed} 个因未 Ready 被跳过` : ""}`, failed ? "info" : "success");
+    const result = useProjectStore.getState().addStoriesToSprint(targetSprint,selectedIds);
+    notify(result.message,result.ok?"success":"error");
+    if(result.ok) setSelectedIds([]);
   };
 
   if (workspace.backlogCollapsed) {
@@ -328,6 +331,7 @@ export default function BacklogPanel() {
 
       <div className="space-y-2 border-b border-[#F2F4F7] p-3">
         <div className="flex items-center gap-2 rounded-lg bg-[#F2F4F7] px-2.5"><Search size={13} className="text-[#98A2B3]" /><input value={search} onChange={(event) => setSearch(event.target.value)} className="h-8 min-w-0 flex-1 bg-transparent text-xs outline-none" placeholder="搜索 Story..." /></div>
+        <select aria-label="Backlog Release 筛选" className="filter-select w-full" value={releaseFilter} onChange={e=>{setReleaseFilter(e.target.value);setSelectedIds([])}}><option value="all">全部 Release</option><option value="unassigned">未分配 Release</option>{Object.values(releases).map(release=><option key={release.id} value={release.id}>{release.name}</option>)}</select>
         <div className="grid grid-cols-3 gap-1.5">
           <select value={source} onChange={(event) => setSource(event.target.value as StorySource | "all")} className="filter-select"><option value="all">全部来源</option>{Object.entries(SOURCE_META).map(([id, meta]) => <option key={id} value={id}>{meta.label}</option>)}</select>
           <select value={maturity} onChange={(event) => setMaturity(event.target.value as StoryMaturityStatus | "all")} className="filter-select"><option value="all">全部成熟度</option><option value="candidate">候选</option><option value="draft">草稿</option><option value="ready">Ready</option></select>
@@ -338,11 +342,11 @@ export default function BacklogPanel() {
           <select value={sprintFilter} onChange={(event) => setSprintFilter(event.target.value)} className="filter-select"><option value="all">全部 Sprint</option><option value="backlog">未进入 Sprint</option>{Object.values(sprints).map((sprint) => <option key={sprint.id} value={sprint.id}>{sprint.name}</option>)}</select>
           <select value={assigneeFilter} onChange={(event) => setAssigneeFilter(event.target.value)} className="filter-select"><option value="all">全部负责人</option>{Object.values(members).map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select>
           <select value={riskFilter} onChange={(event) => setRiskFilter(event.target.value as typeof riskFilter)} className="filter-select"><option value="all">全部风险</option><option value="high">高风险</option><option value="medium">中风险</option><option value="low">低风险</option><option value="none">无风险</option></select>
-          <select value={groupBy} onChange={(event) => setGroupBy(event.target.value as typeof groupBy)} className="filter-select"><option value="none">不分组</option><option value="epic">按 Epic</option><option value="maturity">按成熟度</option><option value="source">按来源</option><option value="sprint">按 Sprint</option></select>
+          <select value={groupBy} onChange={(event) => setGroupBy(event.target.value as typeof groupBy)} className="filter-select"><option value="none">不分组</option><option value="epic">按 Epic</option><option value="maturity">按成熟度</option><option value="source">按来源</option><option value="sprint">按 Sprint</option><option value="release">按 Release</option></select>
         </div>}
       </div>
 
-      {selectedIds.length > 0 && <div className="flex items-center gap-2 border-b border-[#D9D6FE] bg-[#F4F3FF] px-3 py-2"><span className="text-[10px] font-semibold text-[#5925DC]">已选 {selectedIds.length}</span><select value={bulkSprint} onChange={(event) => setBulkSprint(event.target.value)} className="ml-auto rounded border border-[#D9D6FE] bg-white px-1.5 py-1 text-[10px] outline-none">{Object.values(sprints).map((sprint) => <option key={sprint.id} value={sprint.id}>{sprint.name}</option>)}</select><button className="rounded bg-[#5B5CE2] px-2 py-1 text-[10px] font-semibold text-white" onClick={bulkAdd}>批量加入</button></div>}
+      {selectedIds.length > 0 && <div className="flex flex-wrap items-center gap-2 border-b border-[#D9D6FE] bg-[#F4F3FF] px-3 py-2"><span className="text-[10px] font-semibold text-[#5925DC]">已选 {selectedIds.length}</span><ReleaseAssignmentButton storyIds={selectedIds} label="分配 Release"/><select aria-label="批量目标 Sprint" value={targetSprint} onChange={(event) => setBulkSprint(event.target.value)} className="ml-auto rounded border border-[#D9D6FE] bg-white px-1.5 py-1 text-[10px] outline-none">{!eligibleSprints.length && <option value="">先分配同一 Release</option>}{eligibleSprints.map((sprint) => <option key={sprint.id} value={sprint.id}>{sprint.name}</option>)}</select><button disabled={!targetSprint} className="rounded bg-[#5B5CE2] px-2 py-1 text-[10px] font-semibold text-white" onClick={bulkAdd}>批量加入</button></div>}
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {backlogGroups.map((group) => <section key={group.key} className="mb-4 last:mb-0">

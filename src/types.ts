@@ -6,7 +6,7 @@ export type SprintStatus = "planning" | "active" | "review" | "closed"
 export type ViewMode = "user" | "engineering" | "comprehensive"
 export type MainView = "story-map" | "gantt" | "board"
 
-export type Page = "overview" | "story-map" | "backlog" | "wbs" | "gantt" | "sprint" | "acceptance" | "board" | "daily-scrum" | "risks" | "assets" | "chat" | "cockpit" | "workload" | "contribution" | "release" | "retrospective" | "lab" | "settings"
+export type Page = "project-use-case" | "overview" | "story-map" | "backlog" | "wbs" | "gantt" | "sprint" | "acceptance" | "board" | "daily-scrum" | "risks" | "assets" | "chat" | "cockpit" | "workload" | "contribution" | "release" | "retrospective" | "lab" | "settings"
 
 export interface Member {
   id: string
@@ -160,13 +160,49 @@ export interface UserTaskEntity {
 export interface EpicEntity {
   id: string
   title: string
-  userTaskId: string
+  goalId: string
   startDate: string
   endDate: string
   order: number
 }
 
+export type ReleaseStatus = "planning" | "active" | "released"
+export interface ReleaseEntity {
+  id: string
+  name: string
+  goal: string
+  plannedDate: string
+  status: ReleaseStatus
+  publishedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+export interface ReleaseAssignment {
+  fromReleaseId: string | null
+  toReleaseId: string | null
+  previousSprintId: string | null
+  reason: string
+  at: string
+  byId: string
+}
+
+export interface SprintWorkSnapshot {
+  date: string
+  capturedAt: string
+  totalHours: number
+  remainingHours: number
+  itemCount: number
+}
+export interface SprintBurndown {
+  sprintId: string
+  baselineHours: number
+  baselineDate: string
+  baselineKind: "sprint-start" | "first-observation"
+  days: Record<string, SprintWorkSnapshot>
+}
+
 export interface SprintEntity {
+  releaseId?: string | null
   id: string
   name: string
   goal: string
@@ -196,6 +232,9 @@ export interface AcceptanceRecord {
 }
 
 export interface StoryEntity {
+  releaseId?: string | null
+  isReleaseCore?: boolean
+  releaseChanges?: ReleaseAssignment[]
   id: string
   title: string
   as: string
@@ -336,6 +375,14 @@ export interface UmlEdgeEntity {
   targetHandle?: "left" | "right" | "top" | "bottom"
 }
 
+/** Project-level use cases derive from activities (top-level goals); only their presentation is stored here. */
+export interface ProjectUseCaseData {
+  version: 1
+  actors: UmlNodeEntity[]
+  goalPositions: Record<string, { x: number; y: number }>
+  edges: UmlEdgeEntity[]
+}
+
 export interface UmlDiagramData {
   version: 1
   kind: UmlDiagramKind
@@ -421,7 +468,7 @@ export interface ChangeHistoryItem {
   id: string
   createdAt: string
   actorId: string
-  objectType: "project" | "activity" | "userTask" | "epic" | "story" | "task" | "subtask" | "acceptance" | "dependency" | "discussion" | "sprint" | "asset" | "risk" | "impact" | "pulse"
+  objectType: "release" | "project" | "activity" | "userTask" | "epic" | "story" | "task" | "subtask" | "acceptance" | "dependency" | "discussion" | "sprint" | "asset" | "risk" | "impact" | "pulse"
   objectId: string
   field: string
   before: unknown
@@ -697,7 +744,7 @@ export interface MeetingSession {
   pinnedAt?: string | null
   demo?: {
     version: 1
-    source: "project-snapshot"
+    source: "project-snapshot" | "reference-snapshot"
     sourceCapturedAt: string
     sourceFingerprint: string
     recordedEvents: true
@@ -846,6 +893,15 @@ export interface MeetingMessage {
 }
 
 export interface WorkspaceState {
+  aiSessionId?: string
+  aiFocusRequest?: {
+    type: "events" | "proposals"
+    nonce: number
+  }
+  projectTab?: "overview" | "details" | "use-case"
+  sprintTab?: "progress" | "acceptance" | "risks"
+  /** Empty selects the current Sprint; all/unassigned/a Release id selects cross-Sprint planning. */
+  releaseFilterId?: string
   currentPage: Page
   currentView: MainView
   selectedSprintId: string
@@ -863,6 +919,7 @@ export interface WorkspaceState {
   backlogWidth: number
   backlogFullscreen: boolean
   storyMapZoom: number
+  goalFocusId?: string
   storyMapScrollLeft: number
   storyMapScrollTop: number
   showEngineeringLayer: boolean
@@ -898,10 +955,13 @@ export interface ProjectEventRecord {
 }
 
 export interface ProjectDataState {
+  releases: Record<string, ReleaseEntity>
   schemaVersion: number
   project: ProjectEntity
   members: Record<string, Member>
+  projectUseCase: ProjectUseCaseData
   activities: Record<string, UserActivityEntity>
+  /** Legacy import compatibility only; schema 17 stores an empty map. */
   userTasks: Record<string, UserTaskEntity>
   epics: Record<string, EpicEntity>
   stories: Record<string, StoryEntity>
@@ -913,6 +973,7 @@ export interface ProjectDataState {
   assets: Record<string, DesignAssetEntity>
   risks: Record<string, RiskEntity>
   impactAnalyses: ImpactAnalysisEntity[]
+  sprintBurndowns: Record<string, SprintBurndown>
   sprintPulses: Record<string, SprintPulseEntity>
   discussions: Record<string, DiscussionMessageEntity>
   history: ChangeHistoryItem[]

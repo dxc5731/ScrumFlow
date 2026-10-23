@@ -1,3 +1,5 @@
+import { buildCurrentDemo } from "./currentDemo"
+import { normalizeProjectUseCase } from "../utils/projectUseCase"
 import {
   PROJECT_NAME,
   PROJECT_SUBTITLE,
@@ -24,11 +26,10 @@ import type {
   TaskStatus,
   UmlDiagramKind,
   UserActivityEntity,
-  UserTaskEntity,
 } from "../types"
 import { generatePlantUml, parseUmlSource } from "../utils/uml"
 
-export const CURRENT_SCHEMA_VERSION = 16
+export const CURRENT_SCHEMA_VERSION = 20
 const DEMO_NOW = "2026-09-18T10:00:00+08:00"
 
 const DEMO_PROJECT_SCHEDULE = {
@@ -232,7 +233,8 @@ function createCandidateStories(): StoryEntity[] {
   ]
 }
 
-export function createDemoProjectState(): ProjectDataState {
+/** Stable pre-Release fixture retained for existing action regression tests. */
+export function createBaseDemoProjectState(): ProjectDataState {
   const sprints = legacySprints.map((sprint) => {
     const schedule = DEMO_SPRINT_SCHEDULE[sprint.id]
     return {
@@ -264,17 +266,6 @@ export function createDemoProjectState(): ProjectDataState {
     }),
   )
 
-  const userTaskOrder = new Map<string, number>()
-  legacyActivities.forEach((activity) =>
-    activity.taskIds.forEach((id, index) => userTaskOrder.set(id, index)),
-  )
-  const userTasks: UserTaskEntity[] = legacyUserTasks.map((task) => ({
-    id: task.id,
-    title: task.title,
-    activityId: task.activityId,
-    order: userTaskOrder.get(task.id) ?? 0,
-  }))
-
   const epicOrder = new Map<string, number>()
   legacyEpics.forEach((epic) => {
     const count = [...epicOrder.keys()].filter(
@@ -286,7 +277,7 @@ export function createDemoProjectState(): ProjectDataState {
   const epics: EpicEntity[] = legacyEpics.map((epic) => ({
     id: epic.id,
     title: epic.title,
-    userTaskId: epic.taskId,
+    goalId: legacyUserTasks.find((task) => task.id === epic.taskId)!.activityId,
     startDate: DEMO_PROJECT_SCHEDULE.startDate,
     endDate: DEMO_PROJECT_SCHEDULE.endDate,
     order: epicOrder.get(epic.id) ?? 0,
@@ -742,17 +733,20 @@ Repository ..|> Port : 实现
       legacyMembers.map((member) => ({ ...member, capacityHours: 40 })),
     ),
     activities: recordById(activities),
-    userTasks: recordById(userTasks),
+    projectUseCase: normalizeProjectUseCase(recordById(activities)),
+    userTasks: {},
     epics: recordById(epics),
-    stories: recordById(allStories),
+    releases: { "release-demo": { id: "release-demo", name: "V1.0 课程交付", goal: "完成规划、执行与验收闭环", plannedDate: DEMO_PROJECT_SCHEDULE.endDate, status: "active", publishedAt: null, createdAt: DEMO_NOW, updatedAt: DEMO_NOW } },
+    stories: recordById(allStories.map(story => ({ ...story, releaseId: "release-demo", isReleaseCore: false, releaseChanges: [] }))),
     tasks: recordById(tasks),
     subtasks: recordById(subtasks),
-    sprints: recordById(sprints),
+    sprints: recordById(sprints.map(sprint => ({ ...sprint, releaseId: "release-demo" }))),
     acceptanceCriteria: recordById(acceptanceCriteria),
     dependencies: recordById(dependencies),
     assets: recordById(assets),
     risks: recordById(risks),
     impactAnalyses: [],
+    sprintBurndowns: {},
     sprintPulses: recordById(sprintPulses),
     discussions: recordById(discussions),
     proposals: {},
@@ -792,4 +786,9 @@ Repository ..|> Port : 实现
       focusRequest: null,
     },
   }
+}
+
+/** Fresh initialization follows the current Shanghai date; saved projects keep their dates. */
+export function createDemoProjectState(now = new Date()): ProjectDataState {
+  return buildCurrentDemo(createBaseDemoProjectState(), now)
 }

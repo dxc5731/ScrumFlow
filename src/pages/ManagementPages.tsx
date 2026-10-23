@@ -15,15 +15,11 @@ import {
   Trash2,
   Users,
 } from "lucide-react"
-import type { RiskEntity } from "../types"
 import { useProjectStore } from "../store/projectStore"
 import {
   selectActiveRisks,
   selectDailyActualWorkloadHeatmap,
   selectDailyWorkloadHeatmap,
-  selectProjectCompletion,
-  selectReleaseSummary,
-  selectRisks,
   selectScheduleHealth,
   selectSprintAnalytics,
   selectTeamWorkloads,
@@ -92,114 +88,20 @@ export function OverviewPage() {
   const [announceWelcome, setAnnounceWelcome] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [meetingView, setMeetingView] = useState<"live" | "history">("live")
-  const recentMeeting = Object.values(state.meetingSessions).filter((item) => item.targetType === "project" && item.targetId === state.project.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
-  const completion = selectProjectCompletion(state)
-  const release = selectReleaseSummary(state)
+  const recentMeeting = Object.values(state.meetingSessions).filter(item => item.targetType === "project" && item.targetId === state.project.id).sort((a,b)=>b.createdAt.localeCompare(a.createdAt))[0]
   const sprint = state.sprints[state.workspace.selectedSprintId]
-  const analytics = sprint ? selectSprintAnalytics(state, sprint.id) : null
-  const recentImpacts = state.impactAnalyses.slice(-5).reverse()
-  const risks = selectActiveRisks(state).slice(0, 5)
-  return (
-    <PageShell title="项目概览" description={`${state.project.goal} · ${state.project.startDate} 至 ${state.project.endDate}`} icon={Gauge} actions={<><button className="secondary-button" onClick={() => { setMeetingSetup(true) }}><Bot size={14} /> 发起项目会议</button><button className="secondary-button" disabled={!recentMeeting} onClick={() => { setAnnounceWelcome(false); setHistoryOpen(true); setMeetingView("history"); setMeetingId(recentMeeting.id) }}><Clock3 size={14} /> 历史会议</button>{recentMeeting && <button className="secondary-button" onClick={() => { setAnnounceWelcome(false); setHistoryOpen(false); setMeetingView("history"); setMeetingId(recentMeeting.id) }}><Clock3 size={14} /> 查看最近会议</button>}</>}>
-      {meetingSetup && <MeetingSetup targetType="project" targetId={state.project.id} onClose={() => setMeetingSetup(false)} onStart={id => { setMeetingSetup(false); setHistoryOpen(false); setMeetingView("live"); setAnnounceWelcome(true); setMeetingId(id) }} />}
-      {meetingId && <MeetingRoom key={meetingId} announceWelcome={announceWelcome} initialView={meetingView} initialHistoryOpen={historyOpen} initialSessionId={meetingId} onClose={() => setMeetingId(null)} />}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Metric label="整体交付进度" value={`${completion.percent}%`} detail={`${completion.acceptedPoints}/${completion.totalPoints} Story Points 已验收`} />
-        <Metric label="已交付业务价值" value={`${release.valueRate}%`} detail={`${release.deliveredValue}/${release.totalValue} 价值点`} tone="success" />
-        <Metric label="当前 Sprint" value={analytics ? `${analytics.completionRate}%` : "未选择"} detail={sprint?.name ?? "请先创建 Sprint"} />
-        <Metric label="开放风险" value={release.activeRiskCount} detail={`${release.highRiskCount} 个高风险`} tone={release.highRiskCount ? "danger" : "default"} />
-      </div>
-      <Section title="当前 Sprint 状态">
-        <div className="grid gap-3 lg:grid-cols-3">
-          <div className="rounded-lg border border-[#E2E7EE] bg-white p-4 lg:col-span-2">
-            <div className="flex items-center gap-2 text-xs font-semibold text-[#344054]"><Flag size={14} />{sprint?.goal || "尚未设置 Sprint Goal"}</div>
-            <div className="mt-4 grid grid-cols-4 gap-2 text-center">
-              {[
-                ["Story", analytics?.storyCount ?? 0],
-                ["已验收", analytics?.acceptedStoryCount ?? 0],
-                ["阻塞任务", analytics?.blockedTaskCount ?? 0],
-                ["逾期任务", analytics?.overdueTaskCount ?? 0],
-              ].map(([label, value]) => <div key={label} className="border-l border-[#EAECF0] first:border-0"><div className="text-lg font-semibold text-[#172033]">{value}</div><div className="text-[10px] text-[#667085]">{label}</div></div>)}
-            </div>
-          </div>
-          <div className="rounded-lg border border-[#E2E7EE] bg-white p-4">
-            <div className="text-xs font-semibold text-[#344054]">项目需求说明</div>
-            <p className="mt-2 line-clamp-5 text-xs leading-5 text-[#667085]">{state.project.requirementBrief || "尚未填写需求说明"}</p>
-          </div>
-        </div>
-      </Section>
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Section title="风险焦点">
-          <div className="divide-y divide-[#F2F4F7] rounded-lg border border-[#E2E7EE] bg-white">
-            {risks.map((risk) => <div key={risk.id} className="flex items-center gap-3 p-3"><ShieldAlert size={14} className={risk.level === "high" ? "text-[#D92D20]" : "text-[#DC6803]"} /><div className="min-w-0"><div className="truncate text-xs font-medium text-[#344054]">{risk.title}</div><div className="text-[10px] text-[#98A2B3]">{risk.targetType.toUpperCase()} · {risk.status}</div></div><span className="ml-auto text-[10px] text-[#667085]">{state.members[risk.ownerId]?.name}</span></div>)}
-            {!risks.length && <div className="p-6 text-center text-xs text-[#98A2B3]">暂无开放风险</div>}
-          </div>
-        </Section>
-        <Section title="最近变更影响">
-          <div className="divide-y divide-[#F2F4F7] rounded-lg border border-[#E2E7EE] bg-white">
-            {recentImpacts.map((impact) => <div key={impact.id} className="p-3"><div className="flex items-center gap-2"><AlertTriangle size={13} className={impact.releaseRisk === "high" ? "text-[#D92D20]" : "text-[#DC6803]"} /><span className="text-xs font-medium text-[#344054]">{impact.summary}</span></div><div className="mt-1 text-[10px] text-[#98A2B3]">Release 风险：{impact.releaseRisk} · {new Date(impact.createdAt).toLocaleString("zh-CN")}</div></div>)}
-            {!recentImpacts.length && <div className="p-6 text-center text-xs text-[#98A2B3]">暂无关键字段变更</div>}
-          </div>
-        </Section>
-      </div>
-    </PageShell>
-  )
-}
-
-type RiskDraft = Omit<RiskEntity, "id" | "createdAt" | "updatedAt">
-const blankRisk: RiskDraft = { title: "", targetType: "story", targetId: "", level: "medium", description: "", impact: "", mitigation: "", ownerId: "m1", status: "open" }
-
-export function RisksPage() {
-  const state = useProjectStore()
-  const [draft, setDraft] = useState<RiskDraft>(blankRisk)
-  const [editing, setEditing] = useState<string | null>(null)
-  const risks = selectRisks(state)
-  const targets = draft.targetType === "story" ? state.stories : draft.targetType === "task" ? state.tasks : state.sprints
-  const submit = () => {
-    try {
-      if (editing) {
-        const result = state.updateRisk(editing, draft as Partial<RiskEntity>)
-        notify(result.message, result.ok ? "success" : "error")
-      } else {
-        state.createRisk(draft)
-        notify("风险已登记", "success")
-      }
-      setEditing(null)
-      setDraft(blankRisk)
-    } catch (error) { notify(error instanceof Error ? error.message : "风险保存失败", "error") }
-  }
-  const openTarget = (risk: RiskEntity) => {
-    if (risk.targetType === "story") state.requestFocus("story", risk.targetId, "story-map")
-    else if (risk.targetType === "task") state.requestFocus("task", risk.targetId, "gantt")
-    else {
-      state.selectSprint(risk.targetId)
-      state.setWorkspace({ currentPage: "sprint" })
-    }
-  }
-  return (
-    <PageShell title="风险登记册" description="统一维护 Story、Task 和 Sprint 风险，包含影响、应对、负责人和解决状态。" icon={ShieldAlert}>
-      <div className="grid gap-5 xl:grid-cols-[360px_1fr]">
-        <div className="rounded-lg border border-[#E2E7EE] bg-white p-4">
-          <h2 className="text-sm font-semibold text-[#344054]">{editing ? "编辑风险" : "登记风险"}</h2>
-          <div className="mt-4 space-y-3">
-            <input className="form-input" placeholder="风险标题" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
-            <div className="grid grid-cols-2 gap-2"><select className="form-input" value={draft.targetType} onChange={(e) => setDraft({ ...draft, targetType: e.target.value as typeof draft.targetType, targetId: "" })}><option value="story">Story</option><option value="task">Task</option><option value="sprint">Sprint</option></select><select className="form-input" value={draft.targetId} onChange={(e) => setDraft({ ...draft, targetId: e.target.value })}><option value="">选择关联对象</option>{Object.values(targets).map((target) => <option key={target.id} value={target.id}>{target.title ?? target.name}</option>)}</select></div>
-            <div className="grid grid-cols-2 gap-2"><select className="form-input" value={draft.level} onChange={(e) => setDraft({ ...draft, level: e.target.value as typeof draft.level })}><option value="high">高风险</option><option value="medium">中风险</option><option value="low">低风险</option></select><select className="form-input" value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value as typeof draft.status })}><option value="open">开放</option><option value="mitigating">应对中</option><option value="resolved">已解决</option></select></div>
-            <select className="form-input" value={draft.ownerId} onChange={(e) => setDraft({ ...draft, ownerId: e.target.value })}>{Object.values(state.members).map((member) => <option key={member.id} value={member.id}>{member.name} · {member.role}</option>)}</select>
-            <textarea className="form-input min-h-16 resize-y" placeholder="风险说明" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
-            <textarea className="form-input min-h-16 resize-y" placeholder="潜在影响" value={draft.impact} onChange={(e) => setDraft({ ...draft, impact: e.target.value })} />
-            <textarea className="form-input min-h-16 resize-y" placeholder="应对措施" value={draft.mitigation} onChange={(e) => setDraft({ ...draft, mitigation: e.target.value })} />
-            <div className="flex gap-2"><button className="primary-button flex-1" onClick={submit}><Save size={13} />保存风险</button>{editing && <button className="secondary-button" onClick={() => { setEditing(null); setDraft(blankRisk) }}>取消</button>}</div>
-          </div>
-        </div>
-        <div className="overflow-hidden rounded-lg border border-[#E2E7EE] bg-white">
-          <div className="grid grid-cols-[1.3fr_.7fr_.7fr_.7fr_1fr_76px] gap-3 border-b border-[#E2E7EE] bg-[#F9FAFB] px-4 py-2 text-[10px] font-semibold text-[#667085]"><span>风险</span><span>关联</span><span>等级</span><span>状态</span><span>负责人</span><span>操作</span></div>
-          {risks.map((risk) => <div key={risk.id} className="grid grid-cols-[1.3fr_.7fr_.7fr_.7fr_1fr_76px] items-center gap-3 border-b border-[#F2F4F7] px-4 py-3 text-xs last:border-0"><div><div className="font-medium text-[#344054]">{risk.title}</div><div className="mt-1 line-clamp-1 text-[10px] text-[#98A2B3]">{risk.impact}</div></div><button className="text-left font-mono text-[10px] text-[#175CD3] hover:underline" onClick={() => openTarget(risk)}>{risk.targetType} · {risk.targetId}</button><span className={risk.level === "high" ? "font-semibold text-[#B42318]" : "text-[#B54708]"}>{risk.level}</span><select className="rounded border border-[#D0D5DD] px-1 py-1 text-[10px]" value={risk.status} onChange={(e) => state.updateRisk(risk.id, { status: e.target.value as RiskEntity["status"] })}><option value="open">开放</option><option value="mitigating">应对中</option><option value="resolved">已解决</option></select><span className="flex items-center gap-2"><MemberAvatar memberId={risk.ownerId} size={22} />{state.members[risk.ownerId]?.name}</span><div className="flex"><button className="icon-button" title="编辑风险" onClick={() => { setEditing(risk.id); setDraft({ title: risk.title, targetType: risk.targetType, targetId: risk.targetId, level: risk.level, description: risk.description, impact: risk.impact, mitigation: risk.mitigation, ownerId: risk.ownerId, status: risk.status }) }}><Settings2 size={13} /></button><button className="icon-button text-[#B42318]" title="删除风险" onClick={() => state.deleteRisk(risk.id)}><Trash2 size={13} /></button></div></div>)}
-          {!risks.length && <div className="py-12 text-center text-xs text-[#98A2B3]">尚未登记风险</div>}
-        </div>
-      </div>
-    </PageShell>
-  )
+  const pending = Object.values(state.stories).filter(story => story.sprintId === sprint?.id && story.deliveryStatus === "pending_acceptance")
+  const activeRisks = selectActiveRisks(state)
+  return <PageShell title={state.project.name} description={state.project.goal || "在基本资料中完善项目目标"} icon={Gauge} actions={<><button className="secondary-button" onClick={()=>{setMeetingSetup(true)}}><Bot size={14}/>发起项目会议</button><button className="secondary-button" disabled={!recentMeeting} onClick={()=>{setAnnounceWelcome(false);setHistoryOpen(true);setMeetingView("history");setMeetingId(recentMeeting!.id)}}><Clock3 size={14}/>历史会议</button></>}>
+    {meetingSetup && <MeetingSetup targetType="project" targetId={state.project.id} onClose={() => setMeetingSetup(false)} onStart={id => { setMeetingSetup(false); setHistoryOpen(false); setMeetingView("live"); setAnnounceWelcome(true); setMeetingId(id) }} />}
+    {meetingId && <MeetingRoom announceWelcome={announceWelcome} key={meetingId} initialView={meetingView} initialHistoryOpen={historyOpen} initialSessionId={meetingId} onClose={()=>setMeetingId(null)}/>}
+    <p className="text-xs text-[#667085]">{state.project.startDate} 至 {state.project.endDate} · {Object.keys(state.members).length} 位成员 · {Object.keys(state.activities).length} 个目标 · {Object.keys(state.releases).length} 个 Release</p>
+    <Section title="待处理事项"><div className="divide-y divide-[#EAECF0] rounded-lg border border-[#E2E7EE] bg-white">
+      <button className="flex w-full items-center justify-between gap-4 p-4 text-left hover:bg-[#F9FAFB]" onClick={()=>state.setWorkspace({currentPage:"sprint",sprintTab:"acceptance"})}><span><b className="block text-sm text-[#344054]">待验收故事</b><span className="mt-1 block text-xs text-[#667085]">{sprint?.name ?? "尚未选择 Sprint"} · {pending.length ? pending.slice(0,3).map(story=>story.title).join("、") : "暂无待验收故事"}</span></span><span className="shrink-0 text-xs text-[#6941C6]">{pending.length} 项 · 前往验收 →</span></button>
+      <button className="flex w-full items-center justify-between gap-4 p-4 text-left hover:bg-[#F9FAFB]" onClick={()=>state.setWorkspace({currentPage:"risks",sprintTab:"risks"})}><span><b className="block text-sm text-[#344054]">风险处理</b><span className="mt-1 block text-xs text-[#667085]">{activeRisks.filter(risk=>risk.level==="high").length} 项高风险；进入风险面板可查看全部项目风险</span></span><span className="shrink-0 text-xs text-[#6941C6]">管理风险 →</span></button>
+      <button className="flex w-full items-center justify-between gap-4 p-4 text-left hover:bg-[#F9FAFB]" onClick={()=>state.setWorkspace({currentPage:"release"})}><span><b className="block text-sm text-[#344054]">版本交付</b><span className="mt-1 block text-xs text-[#667085]">核对核心故事验收、阻塞与发布条件</span></span><span className="shrink-0 text-xs text-[#6941C6]">管理 Release →</span></button>
+    </div></Section>
+  </PageShell>
 }
 
 interface HeatmapTaskDetail {

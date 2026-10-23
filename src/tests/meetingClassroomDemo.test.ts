@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest"
-import { createProjectStore, projectDataSnapshot, useProjectStore } from "../store/projectStore"
+import { beforeEach, describe, expect, it } from "vitest"
+import { createProjectStore, projectDataSnapshot, resetProjectStoreForTests, useProjectStore } from "../store/projectStore"
+import { createDemoProjectState } from "../data/demoProject"
 import { buildClassroomDemo, projectFingerprint, sortMeetingHistory } from "../agents/meetingClassroomDemo"
 import { meetingInsights, meetingOutcomeState } from "../agents/meetingOutcomes"
 import { readableMeeting } from "../agents/meetingPresentation"
@@ -9,6 +10,22 @@ import { meetingChartData } from "../agents/meetingChartData"
 import { scrumMeetingReport } from "../agents/meetingReport"
 
 describe("classroom rehearsal isolation and saved evidence", () => {
+  beforeEach(resetProjectStoreForTests)
+
+  it("keeps the comprehensive demo intact while building a labelled classroom reference snapshot", () => {
+    const source = createDemoProjectState(), before = JSON.stringify(source)
+    const demo = buildClassroomDemo(source)
+    expect(JSON.stringify(source)).toBe(before)
+    expect(demo.session.projectId).toBe(source.project.id)
+    expect(demo.session.demo?.source).toBe("reference-snapshot")
+    const loaded = { ...source, meetingSessions: { [demo.session.id]: demo.session }, meetingMessages: demo.messages }
+    const insights = meetingInsights(loaded, demo.session)
+    expect(insights.counts).toMatchObject({ executed: 4, rejected: 2, pending: 1 })
+    expect(insights.state.project.name).toBe("ScrumFlow 课堂会议独立示例")
+    expect(insights.state.tasks["data-024"]).toBeDefined()
+    expect(source.tasks["data-024"]).toBeUndefined()
+    expect(source.proposals).toEqual({})
+  })
   it("executes the real executor in a private store and restores consistent outcomes after JSON reload", () => {
     const source = projectDataSnapshot(useProjectStore.getState()), before = JSON.stringify(source)
     const formal = projectFingerprint(source)

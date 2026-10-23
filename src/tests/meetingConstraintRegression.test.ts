@@ -109,20 +109,16 @@ describe("meeting hard constraint regression", () => {
     expect(describeBusinessChanges(summary)).toContain("调整已有任务 2 个")
   })
 
-  it("restores the fixed demo model including meetings and proposals", () => {
+  it("resets to the current comprehensive demo and clears meetings and proposals", () => {
     const state = useProjectStore.getState()
-    const original = { storyCount: Object.keys(state.stories).length, taskCount: Object.keys(state.tasks).length,
-      storyIds: Object.keys(state.stories), taskIds: Object.keys(state.tasks), dataEnd: state.tasks["data-024"].endDate,
-      stories: structuredClone(state.stories), tasks: structuredClone(state.tasks), dependencies: structuredClone(state.dependencies), risks: structuredClone(state.risks) }
     state.createMeeting("project", state.project.id)
     state.createStory({ title: "QA 临时 Story", source: "manual" })
     state.resetDemoData()
     const restored = useProjectStore.getState()
-    expect({ storyCount: Object.keys(restored.stories).length, taskCount: Object.keys(restored.tasks).length,
-      storyIds: Object.keys(restored.stories), taskIds: Object.keys(restored.tasks), dataEnd: restored.tasks["data-024"].endDate,
-      stories: restored.stories, tasks: restored.tasks, dependencies: restored.dependencies, risks: restored.risks }).toEqual(original)
-    expect(Object.keys(restored.sprints)).toEqual(["s1", "s2", "s3"])
-    expect(Object.keys(restored.members)).toEqual(["m1", "m2", "m3", "m4"])
+    expect(restored.project.id).toBe("scrumflow-comprehensive-demo")
+    expect(Object.keys(restored.sprints)).toEqual(["s1", "s2", "s3", "s4"])
+    expect(Object.keys(restored.members)).toEqual(["m1", "m2", "m3", "m4", "m5"])
+    expect(Object.values(restored.stories).some(story => story.title === "QA 临时 Story")).toBe(false)
     expect(Object.keys(restored.meetingSessions)).toHaveLength(0)
     expect(Object.keys(restored.proposals)).toHaveLength(0)
     const firstReset = structuredClone({ stories: restored.stories, tasks: restored.tasks, subtasks: restored.subtasks,

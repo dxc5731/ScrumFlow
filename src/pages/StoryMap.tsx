@@ -1,3 +1,4 @@
+import { matchesRelease, planningStories, planningScopeLabel } from "../store/release"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   CheckCircle2,
@@ -39,7 +40,6 @@ import {
   selectStoryRiskLevel,
   selectTaskVisualState,
   selectTaskSubtasks,
-  selectUserTasks,
   storyDisplayStatus,
 } from "../store/selectors"
 import type {
@@ -48,7 +48,6 @@ import type {
   StoryEntity,
   TaskEntity,
   UserActivityEntity,
-  UserTaskEntity,
 } from "../types"
 
 const COL_W = 176
@@ -113,7 +112,7 @@ const DOMAIN_OPTIONS: Array<{
   { value: "other", label: "其他" },
 ]
 
-type HierarchyKind = "activity" | "userTask" | "epic"
+type HierarchyKind = "activity" | "epic"
 type HierarchyEditorState = {
   kind: HierarchyKind
   mode: "create" | "edit"
@@ -159,25 +158,11 @@ export default function StoryMap({
     [state.activities],
   )
   const columns = useMemo(
-    () =>
-      activities.flatMap((activity) =>
-        selectUserTasks(state, activity.id).flatMap((userTask) => {
-          const taskEpics = selectEpics(state, userTask.id)
-          return (
-            taskEpics.length
-              ? taskEpics
-              : [
-                  {
-                    id: `empty-${userTask.id}`,
-                    title: "未设置 Epic",
-                    userTaskId: userTask.id,
-                    order: 0,
-                  },
-                ]
-          ).map((epic) => ({ activity, userTask, epic }))
-        }),
-      ),
-    [activities, state.userTasks, state.epics],
+    () => activities.flatMap((activity) => {
+      const epics = selectEpics(state, activity.id)
+      return (epics.length ? epics : [{ id: `empty-${activity.id}`, title: "未设置史诗", goalId: activity.id, order: 0 }])
+        .map((epic) => ({ activity, epic }))
+    }), [activities, state.epics],
   )
 
   const activityGroups = useMemo(
@@ -191,23 +176,12 @@ export default function StoryMap({
       })),
     [activities, columns],
   )
-  const userTaskGroups = useMemo(
-    () =>
-      activities.flatMap((activity) =>
-        selectUserTasks(state, activity.id).map((userTask) => ({
-          activity,
-          userTask,
-          count: Math.max(
-            1,
-            columns.filter((column) => column.userTask.id === userTask.id)
-              .length,
-          ),
-        })),
-      ),
-    [activities, columns, state.userTasks],
-  )
   const selectedSprint = state.sprints[workspace.selectedSprintId]
-  const orderedSprints = selectedSprint ? [selectedSprint] : []
+  const visibleStories = planningStories(state)
+  const orderedSprints = workspace.releaseFilterId
+    ? [...Object.values(state.sprints).filter(sprint => visibleStories.some(story => story.sprintId === sprint.id)).sort((a,b)=>a.startDate.localeCompare(b.startDate)),
+      ...(visibleStories.some(story => !story.sprintId) ? [{id:"__backlog__",name:"尚未安排 Sprint",startDate:state.project.startDate,endDate:state.project.endDate,status:"planning" as const}] : [])]
+    : selectedSprint ? [selectedSprint] : []
   const canvasWidth = Math.max(1100, columns.length * (COL_W + GAP) + 80)
 
   useEffect(() => {
@@ -217,6 +191,15 @@ export default function StoryMap({
     el.scrollLeft = workspace.storyMapScrollLeft
     el.scrollTop = workspace.storyMapScrollTop
   }, [captureOnly])
+
+  useEffect(() => {
+    if (captureOnly || !workspace.goalFocusId) return
+    const canvas = canvasRef.current
+    const element = canvas?.querySelector<HTMLElement>('[data-goal-id="' + CSS.escape(workspace.goalFocusId) + '"]')
+    if (!canvas || !element) return
+    const bounds = element.getBoundingClientRect(), viewport = canvas.getBoundingClientRect()
+    canvas.scrollTo({left:canvas.scrollLeft + bounds.left - viewport.left - (canvas.clientWidth - bounds.width) / 2, top:0, behavior:"smooth"})
+  },[captureOnly,workspace.goalFocusId])
 
   useEffect(() => {
     if (captureOnly) return
@@ -293,24 +276,13 @@ export default function StoryMap({
     })
   }
 
-  const editUserTask = (userTask: UserTaskEntity) => {
-    setHierarchyEditor({
-      kind: "userTask",
-      mode: "edit",
-      id: userTask.id,
-      title: userTask.title,
-      parentId: userTask.activityId,
-      domain: "other",
-    })
-  }
-
   const editEpic = (epic: EpicEntity) => {
     setHierarchyEditor({
       kind: "epic",
       mode: "edit",
       id: epic.id,
       title: epic.title,
-      parentId: epic.userTaskId,
+      parentId: epic.goalId,
       domain: "other",
     })
   }
@@ -327,7 +299,7 @@ export default function StoryMap({
       if (hierarchyEditor.kind === "activity") {
         if (hierarchyEditor.mode === "create") {
           state.createActivity({ title, domain: hierarchyEditor.domain })
-          result.message = "User Activity 已创建"
+          result.message = "目标 已创建"
         } else {
           result = state.updateActivity(hierarchyEditor.id!, {
             title,
@@ -335,29 +307,16 @@ export default function StoryMap({
           })
         }
       }
-      if (hierarchyEditor.kind === "userTask") {
-        if (!hierarchyEditor.parentId) {
-          result = { ok: false, message: "请选择所属 User Activity" }
-        } else if (hierarchyEditor.mode === "create") {
-          state.createUserTask(hierarchyEditor.parentId, { title })
-          result.message = "User Task 已创建"
-        } else {
-          result = state.updateUserTask(hierarchyEditor.id!, {
-            title,
-            activityId: hierarchyEditor.parentId,
-          })
-        }
-      }
       if (hierarchyEditor.kind === "epic") {
         if (!hierarchyEditor.parentId) {
-          result = { ok: false, message: "请选择所属 User Task" }
+          result = { ok: false, message: "请选择所属目标" }
         } else if (hierarchyEditor.mode === "create") {
           state.createEpic(hierarchyEditor.parentId, { title })
-          result.message = "Epic 已创建"
+          result.message = "史诗已创建"
         } else {
           result = state.updateEpic(hierarchyEditor.id!, {
             title,
-            userTaskId: hierarchyEditor.parentId,
+            goalId: hierarchyEditor.parentId,
           })
         }
       }
@@ -376,20 +335,11 @@ export default function StoryMap({
     id: string,
     title: string,
   ) => {
-    const userTaskIds = new Set(
-      kind === "activity"
-        ? Object.values(state.userTasks)
-            .filter((task) => task.activityId === id)
-            .map((task) => task.id)
-        : kind === "userTask"
-          ? [id]
-          : [],
-    )
     const epicIds = new Set(
       kind === "epic"
         ? [id]
         : Object.values(state.epics)
-            .filter((epic) => userTaskIds.has(epic.userTaskId))
+            .filter((epic) => epic.goalId === id)
             .map((epic) => epic.id),
     )
     const storyIds = new Set(
@@ -406,9 +356,6 @@ export default function StoryMap({
       taskIds.has(subtask.taskId),
     ).length
     const parts = [
-      kind === "activity" && userTaskIds.size
-        ? `${userTaskIds.size} 个 User Task`
-        : "",
       kind !== "epic" && epicIds.size ? `${epicIds.size} 个 Epic` : "",
       storyIds.size ? `${storyIds.size} 个 Story` : "",
       taskIds.size ? `${taskIds.size} 个工程任务` : "",
@@ -429,9 +376,7 @@ export default function StoryMap({
     const result =
       hierarchyDelete.kind === "activity"
         ? state.deleteActivity(hierarchyDelete.id)
-        : hierarchyDelete.kind === "userTask"
-          ? state.deleteUserTask(hierarchyDelete.id)
-          : state.deleteEpic(hierarchyDelete.id)
+        : state.deleteEpic(hierarchyDelete.id)
     notify(result.message, result.ok ? "success" : "error")
     if (result.ok) setHierarchyDelete(null)
   }
@@ -445,29 +390,17 @@ export default function StoryMap({
   const dropActivity = (event: React.DragEvent, targetId: string) => {
     event.preventDefault()
     const payload = readDragPayload(event)
+    if (payload?.type === "epic") {
+      state.moveEpic(payload.id, targetId, selectEpics(state, targetId).length)
+      return finishDrop("史诗及其用户故事已移至目标")
+    }
     if (payload?.type !== "activity")
-      return finishDrop("Activity 只能与同层级排序", false, false)
+      return finishDrop("目标只能与同层级排序", false, false)
     state.moveActivity(
       payload.id,
       activities.findIndex((item) => item.id === targetId),
     )
-    finishDrop("User Activity 及其完整子树已移动")
-  }
-
-  const dropUserTask = (event: React.DragEvent, targetId: string) => {
-    event.preventDefault()
-    event.stopPropagation()
-    const payload = readDragPayload(event)
-    if (payload?.type !== "userTask")
-      return finishDrop("User Task 只能放入 User Activity 层", false, false)
-    const target = state.userTasks[targetId]
-    const siblings = selectUserTasks(state, target.activityId)
-    state.moveUserTask(
-      payload.id,
-      target.activityId,
-      siblings.findIndex((item) => item.id === targetId),
-    )
-    finishDrop("User Task 及其 Epic 子树已移动")
+    finishDrop("目标 及其完整子树已移动")
   }
 
   const dropEpic = (event: React.DragEvent, targetId: string) => {
@@ -475,13 +408,13 @@ export default function StoryMap({
     event.stopPropagation()
     const payload = readDragPayload(event)
     if (payload?.type !== "epic")
-      return finishDrop("Epic 只能放入 User Task 层", false, false)
+      return finishDrop("Epic 只能放入 目标 层", false, false)
     const target = state.epics[targetId]
     if (!target) return finishDrop("目标 Epic 不可用", false, false)
-    const siblings = selectEpics(state, target.userTaskId)
+    const siblings = selectEpics(state, target.goalId)
     state.moveEpic(
       payload.id,
-      target.userTaskId,
+      target.goalId,
       siblings.findIndex((item) => item.id === targetId),
     )
     finishDrop("Epic 及其 Story 子树已移动")
@@ -490,7 +423,7 @@ export default function StoryMap({
   const dropCell = (
     event: React.DragEvent,
     epicId: string,
-    sprintId: string,
+    sprintId: string | null,
   ) => {
     event.preventDefault()
     event.stopPropagation()
@@ -530,6 +463,7 @@ export default function StoryMap({
   }
 
   const filteredStory = (story: StoryEntity) => {
+    if (!matchesRelease(story, workspace.releaseFilterId)) return false
     if (
       workspace.memberFilterId &&
       story.assigneeId !== workspace.memberFilterId
@@ -559,15 +493,15 @@ export default function StoryMap({
           <div className="flex h-16 flex-shrink-0 items-center gap-3 border-b border-[#D0D5DD] bg-white px-8">
             <div className="min-w-0 flex-1">
               <div className="text-base font-semibold text-[#172033]">{state.project.name} · 用户故事地图</div>
-              <div className="mt-1 text-[10px] text-[#667085]">{selectedSprint?.name ?? "未选择 Sprint"} · {selectedSprint?.startDate ?? "-"} 至 {selectedSprint?.endDate ?? "-"}</div>
+              <div className="mt-1 text-[10px] text-[#667085]">{planningScopeLabel(state)} · {workspace.releaseFilterId ? state.project.startDate : selectedSprint?.startDate ?? "-"} 至 {workspace.releaseFilterId ? state.project.endDate : selectedSprint?.endDate ?? "-"}</div>
             </div>
-            <span className="rounded border border-[#B2CCFF] bg-[#EFF8FF] px-2 py-1 text-[10px] font-medium text-[#175CD3]">{workspace.showCompletedStories ? "包含已完成" : "隐藏已完成"}</span>
-            <span className="rounded border border-[#D9D6FE] bg-[#F4F3FF] px-2 py-1 text-[10px] font-medium text-[#5925DC]">{workspace.showEngineeringLayer ? "展开任务与子任务" : "仅 Story"}</span>
+            <span className="whitespace-nowrap rounded border border-[#B2CCFF] bg-[#EFF8FF] px-2 py-1 text-[10px] font-medium text-[#175CD3]">{workspace.showCompletedStories ? "包含已完成" : "隐藏已完成"}</span>
+            <span className="whitespace-nowrap rounded border border-[#D9D6FE] bg-[#F4F3FF] px-2 py-1 text-[10px] font-medium text-[#5925DC]">{workspace.showEngineeringLayer ? "展开任务与子任务" : "到用户故事层"}</span>
           </div>
         ) : <div className="flex h-11 flex-shrink-0 items-center gap-2 overflow-x-auto border-b border-[#E2E7EE] bg-white px-4">
           <span className="flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-[#344054]">
             <Layers3 size={14} />
-            综合用户地图
+            目标 → 史诗 → 用户故事
           </span>
           <div className="h-5 w-px flex-shrink-0 bg-[#EAECF0]" />
           <button
@@ -575,8 +509,9 @@ export default function StoryMap({
             onClick={() => createHierarchyItem("activity")}
           >
             <Plus size={13} />
-            新增 Activity
+            新增目标
           </button>
+          <button className="secondary-button flex-shrink-0 px-2" onClick={()=>state.setWorkspace({currentPage:"project-use-case"})}>项目用例图</button>
           <button
             className="toolbar-toggle flex-shrink-0"
             data-active={workspace.showEngineeringLayer}
@@ -719,8 +654,9 @@ export default function StoryMap({
                     <ActivityHeader
                       key={activity.id}
                       activity={activity}
+                      captureOnly={captureOnly}
                       width={count * (COL_W + GAP) - GAP}
-                      active={dropKey === `activity-${activity.id}`}
+                      active={!captureOnly && (dropKey === `activity-${activity.id}` || workspace.goalFocusId === activity.id)}
                       onDragStart={(event) => {
                         setDragging({ type: "activity", id: activity.id })
                         writeDragPayload(event, {
@@ -733,7 +669,7 @@ export default function StoryMap({
                         setDropKey(`activity-${activity.id}`)
                       }}
                       onDrop={(event) => dropActivity(event, activity.id)}
-                      onAdd={() => createHierarchyItem("userTask", activity.id)}
+                      onAdd={() => createHierarchyItem("epic", activity.id)}
                       onEdit={() => editActivity(activity)}
                       onDelete={() =>
                         requestHierarchyDelete(
@@ -745,65 +681,15 @@ export default function StoryMap({
                     />
                   ))}
                 </div>
-                <div className="flex gap-2 pb-1">
-                  {userTaskGroups.map(({ activity, userTask, count }) => {
-                    const theme = DOMAIN[activity.domain]
-                    return (
-                      <div
-                        key={userTask.id}
-                        draggable
-                        className="group flex h-8 flex-shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-medium"
-                        style={{
-                          width: count * (COL_W + GAP) - GAP,
-                          background: theme.soft,
-                          borderColor:
-                            dropKey === `task-${userTask.id}`
-                              ? "#7F56D9"
-                              : `${theme.border}45`,
-                          color: theme.text,
-                        }}
-                        onDragStart={(event) => {
-                          setDragging({ type: "userTask", id: userTask.id })
-                          writeDragPayload(event, {
-                            type: "userTask",
-                            id: userTask.id,
-                          })
-                        }}
-                        onDragOver={(event) => {
-                          event.preventDefault()
-                          setDropKey(`task-${userTask.id}`)
-                        }}
-                        onDrop={(event) => dropUserTask(event, userTask.id)}
-                      >
-                        <GripVertical size={12} className="opacity-45" />
-                        <span className="min-w-0 flex-1 truncate">
-                          {userTask.title}
-                        </span>
-                        <HierarchyHeaderActions
-                          addTitle="新增 Epic"
-                          onAdd={() => createHierarchyItem("epic", userTask.id)}
-                          onEdit={() => editUserTask(userTask)}
-                          onDelete={() =>
-                            requestHierarchyDelete(
-                              "userTask",
-                              userTask.id,
-                              userTask.title,
-                            )
-                          }
-                        />
-                      </div>
-                    )
-                  })}
-                </div>
                 <div className="flex gap-2 pb-4">
-                  {columns.map(({ activity, userTask, epic }) => {
+                  {columns.map(({ activity, epic }) => {
                     const theme = DOMAIN[activity.domain]
                     const real = state.epics[epic.id]
                     return (
                       <div
                         key={epic.id}
                         draggable={Boolean(real)}
-                        className="group flex h-7 flex-shrink-0 items-center gap-1 rounded-md border bg-white px-2 text-[10px] font-medium text-[#344054]"
+                        className="group flex min-h-10 flex-shrink-0 items-center gap-1 rounded-md border bg-white px-2 text-[10px] font-medium text-[#344054]"
                         style={{
                           width: COL_W,
                           borderColor:
@@ -825,7 +711,7 @@ export default function StoryMap({
                         }}
                         onDrop={(event) => real && dropEpic(event, epic.id)}
                       >
-                        <span className="min-w-0 flex-1 truncate">
+                        <span title={epic.title} className="min-w-0 flex-1">
                           {epic.title}
                         </span>
                         {real ? (
@@ -843,11 +729,11 @@ export default function StoryMap({
                           <button
                             draggable={false}
                             className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-[#667085] hover:bg-[#F2F4F7] hover:text-[#475467]"
-                            title="新增 Epic"
+                            title="新增史诗"
                             onMouseDown={(event) => event.stopPropagation()}
                             onClick={(event) => {
                               event.stopPropagation()
-                              createHierarchyItem("epic", userTask.id)
+                              createHierarchyItem("epic", activity.id)
                             }}
                           >
                             <Plus size={11} />
@@ -859,7 +745,7 @@ export default function StoryMap({
                 </div>
 
                 {orderedSprints.map((sprint) => {
-                  const sprintStories = selectSprintStories(state, sprint.id)
+                  const sprintStories = visibleStories.filter(story => story.sprintId === (sprint.id === "__backlog__" ? null : sprint.id))
                   const total = sprintStories.reduce(
                     (sum, story) => sum + story.storyPoints,
                     0,
@@ -872,7 +758,7 @@ export default function StoryMap({
                     <div
                       key={sprint.id}
                       className="mb-6"
-                      style={{ opacity: selected ? 1 : 0.78 }}
+                      style={{ opacity: selected || workspace.releaseFilterId ? 1 : 0.78 }}
                     >
                       <div className="mb-3 flex items-center gap-2">
                         <span
@@ -901,7 +787,7 @@ export default function StoryMap({
                         {columns.map(({ epic }) => {
                           const cellStories = selectStories(state, {
                             epicId: epic.id,
-                            sprintId: sprint.id,
+                            sprintId: sprint.id === "__backlog__" ? null : sprint.id,
                           }).filter(filteredStory)
                           const key = `cell-${sprint.id}-${epic.id}`
                           return (
@@ -922,7 +808,7 @@ export default function StoryMap({
                               }}
                               onDragLeave={() => setDropKey(null)}
                               onDrop={(event) =>
-                                dropCell(event, epic.id, sprint.id)
+                                dropCell(event, epic.id, sprint.id === "__backlog__" ? null : sprint.id)
                               }
                             >
                               {cellStories.map((story) => (
@@ -1046,7 +932,6 @@ export default function StoryMap({
         <HierarchyEditorDialog
           editor={hierarchyEditor}
           activities={activities}
-          userTasks={byOrder(Object.values(state.userTasks))}
           onChange={setHierarchyEditor}
           onClose={() => setHierarchyEditor(null)}
           onSave={saveHierarchyItem}
@@ -1065,6 +950,7 @@ export default function StoryMap({
 
 function ActivityHeader({
   activity,
+  captureOnly,
   width,
   active,
   onDragStart,
@@ -1075,6 +961,7 @@ function ActivityHeader({
   onDelete,
 }: {
   activity: UserActivityEntity
+  captureOnly: boolean
   width: number
   active: boolean
   onDragStart: (event: React.DragEvent) => void
@@ -1088,7 +975,8 @@ function ActivityHeader({
   return (
     <div
       draggable
-      className="group flex h-9 flex-shrink-0 items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold"
+      data-goal-id={activity.id}
+      className="group flex min-h-11 flex-shrink-0 items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold"
       style={{
         width,
         background: theme.bg,
@@ -1100,13 +988,13 @@ function ActivityHeader({
       onDrop={onDrop}
     >
       <GripVertical size={13} className="opacity-45" />
-      <span className="min-w-0 flex-1 truncate">{activity.title}</span>
-      <HierarchyHeaderActions
-        addTitle="新增 User Task"
+      <span title={activity.title} className="min-w-0 flex-1 leading-snug">{activity.title}</span>
+      {!captureOnly && <HierarchyHeaderActions
+        addTitle="新增史诗"
         onAdd={onAdd}
         onEdit={onEdit}
         onDelete={onDelete}
-      />
+      />}
     </div>
   )
 }
@@ -1167,24 +1055,20 @@ function HierarchyHeaderActions({
 function HierarchyEditorDialog({
   editor,
   activities,
-  userTasks,
   onChange,
   onClose,
   onSave,
 }: {
   editor: HierarchyEditorState
   activities: UserActivityEntity[]
-  userTasks: UserTaskEntity[]
   onChange: (next: HierarchyEditorState) => void
   onClose: () => void
   onSave: () => void
 }) {
   const noun =
     editor.kind === "activity"
-      ? "User Activity"
-      : editor.kind === "userTask"
-        ? "User Task"
-        : "Epic"
+      ? "目标"
+      : "史诗"
   return (
     <div
       className="fixed inset-0 z-[90] flex items-center justify-center bg-[#101828]/25 p-4"
@@ -1252,10 +1136,10 @@ function HierarchyEditorDialog({
               </select>
             </label>
           )}
-          {editor.kind === "userTask" && (
+          {editor.kind === "epic" && (
             <label className="block space-y-1">
               <span className="text-[10px] font-medium text-[#475467]">
-                所属 User Activity
+                所属 目标
               </span>
               <select
                 className="form-input"
@@ -1265,33 +1149,7 @@ function HierarchyEditorDialog({
                 }
               >
                 {activities.map((activity) => (
-                  <option key={activity.id} value={activity.id}>
-                    {activity.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          {editor.kind === "epic" && (
-            <label className="block space-y-1">
-              <span className="text-[10px] font-medium text-[#475467]">
-                所属 User Task
-              </span>
-              <select
-                className="form-input"
-                value={editor.parentId}
-                onChange={(event) =>
-                  onChange({ ...editor, parentId: event.target.value })
-                }
-              >
-                {userTasks.map((userTask) => (
-                  <option key={userTask.id} value={userTask.id}>
-                    {activities.find(
-                      (activity) => activity.id === userTask.activityId,
-                    )?.title ?? "未知 Activity"}
-                    {" / "}
-                    {userTask.title}
-                  </option>
+                  <option key={activity.id} value={activity.id}>{activity.title}</option>
                 ))}
               </select>
             </label>
@@ -1321,10 +1179,8 @@ function HierarchyDeleteDialog({
 }) {
   const noun =
     target.kind === "activity"
-      ? "User Activity"
-      : target.kind === "userTask"
-        ? "User Task"
-        : "Epic"
+      ? "目标"
+      : "史诗"
   return (
     <div
       className="fixed inset-0 z-[90] flex items-center justify-center bg-[#101828]/25 p-4"

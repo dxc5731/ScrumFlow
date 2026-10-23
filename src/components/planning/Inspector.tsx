@@ -1,3 +1,5 @@
+import { inheritedDelivery } from "../../store/release"
+import ReleaseAssignmentButton from "./ReleaseAssignmentButton"
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowDown,
@@ -81,6 +83,12 @@ export default function Inspector() {
       ? state.subtasks[workspace.selectedObjectId]
       : null,
   )
+  const releases = useProjectStore(state => state.releases)
+  const sprints = useProjectStore(state => state.sprints)
+  const allStories = useProjectStore(state => state.stories)
+  const allTasks = useProjectStore(state => state.tasks)
+  const allSubtasks = useProjectStore(state => state.subtasks)
+  const delivery = workspace.selectedObjectType && workspace.selectedObjectId ? inheritedDelivery({stories:allStories,tasks:allTasks,subtasks:allSubtasks},workspace.selectedObjectType,workspace.selectedObjectId) : null
   const setWorkspace = useProjectStore((state) => state.setWorkspace)
   const resizeRef = useRef<{ startX: number; width: number } | null>(null)
 
@@ -138,6 +146,7 @@ export default function Inspector() {
           resizeRef.current = null
         }}
       />
+      {(task || subtask) && delivery && <div className="border-b bg-[#F9F5FF] p-3 text-[10px] text-[#6941C6]">继承 Story 归属：{releases[delivery.releaseId ?? ""]?.name ?? "未分配 Release"} · {sprints[delivery.sprintId ?? ""]?.name ?? "未安排 Sprint"}</div>}
       {story ? (
         <StoryInspector
           story={story}
@@ -375,6 +384,8 @@ function StoryInspector({
               />
             </section>
             <section>
+              <FieldLabel>Release 归属</FieldLabel>
+              <div className="mb-3 flex items-center justify-between gap-2 text-xs"><span>{state.releases[story.releaseId ?? ""]?.name ?? "未分配 Release"}{story.isReleaseCore ? " · 核心 Story" : ""}</span><ReleaseAssignmentButton storyIds={[story.id]}/></div>
               <FieldLabel>紧凑属性</FieldLabel>
               <div className="grid grid-cols-2 gap-2.5">
                 <LabeledSelect
@@ -391,7 +402,7 @@ function StoryInspector({
                   value={story.sprintId ?? ""}
                   options={[
                     { value: "", label: "Product Backlog" },
-                    ...Object.values(state.sprints).map((sprint) => ({
+                    ...Object.values(state.sprints).filter(sprint => Boolean(story.releaseId) && sprint.releaseId === story.releaseId && sprint.status !== "closed").map((sprint) => ({
                       value: sprint.id,
                       label: sprint.name,
                     })),

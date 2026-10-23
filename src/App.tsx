@@ -1,24 +1,22 @@
-import CanvasTopBar from "./components/CanvasTopBar";
-import Inspector from "./components/planning/Inspector";
-import { ToastHost } from "./components/planning/ui";
-import UmlSnapshotBackfill from "./components/uml/UmlSnapshotBackfill";
-import Gantt from "./pages/Gantt";
-import AcceptancePage from "./pages/AcceptancePage";
-import ScrumBoard from "./pages/ScrumBoard";
-import SprintPage from "./pages/SprintPage";
-import StoryMap from "./pages/StoryMap";
-import AssetsPage from "./pages/AssetsPage";
-import {
-  AnalyticsPage,
-  OverviewPage,
-  RisksPage,
-  SettingsPage,
-} from "./pages/ManagementPages";
-import { useProjectStore } from "./store/projectStore";
-import { useEventMonitor } from "./hooks/useEventMonitor";
-import LocalSaveStatus from "./components/planning/LocalSaveStatus";
-import { useEffect } from "react";
-import { ensureClassroomDemo } from "./agents/meetingClassroomDemo";
+import { useEffect } from "react"
+import { ensureClassroomDemo } from "./agents/meetingClassroomDemo"
+import GlobalAiAssistant from "./components/planning/GlobalAiAssistant"
+import { useSprintWorkTracking } from "./hooks/useSprintWorkTracking"
+import ProjectPage from "./pages/ProjectPage"
+import ReleasePage from "./pages/ReleasePage"
+import CanvasTopBar from "./components/CanvasTopBar"
+import Inspector from "./components/planning/Inspector"
+import { ToastHost } from "./components/planning/ui"
+import UmlSnapshotBackfill from "./components/uml/UmlSnapshotBackfill"
+import Gantt from "./pages/Gantt"
+import ScrumBoard from "./pages/ScrumBoard"
+import SprintPage from "./pages/SprintPage"
+import StoryMap from "./pages/StoryMap"
+import AssetsPage from "./pages/AssetsPage"
+import { AnalyticsPage } from "./pages/ManagementPages"
+import { useProjectStore } from "./store/projectStore"
+import { useEventMonitor } from "./hooks/useEventMonitor"
+import LocalSaveStatus from "./components/planning/LocalSaveStatus"
 
 export default function App() {
   useEffect(() => {
@@ -27,21 +25,38 @@ export default function App() {
     if (useProjectStore.persist.hasHydrated()) prepare()
     return unsubscribe
   }, [])
-  useEventMonitor();
-  const workspace = useProjectStore((state) => state.workspace);
-  const planningPage = ["story-map", "gantt", "board"].includes(workspace.currentPage);
-  const hideCollapsedInspector = workspace.currentPage === "story-map" && workspace.backlogFullscreen && !workspace.inspectorOpen;
-  const page = workspace.currentPage === "overview" ? <OverviewPage />
-    : workspace.currentPage === "story-map" ? <StoryMap />
-    : workspace.currentPage === "gantt" ? <Gantt />
-      : workspace.currentPage === "board" ? <ScrumBoard />
-        : workspace.currentPage === "sprint" ? <SprintPage />
-          : workspace.currentPage === "acceptance" ? <AcceptancePage />
-            : workspace.currentPage === "risks" ? <RisksPage />
-              : workspace.currentPage === "assets" ? <AssetsPage />
-                : workspace.currentPage === "workload" ? <AnalyticsPage />
-                  : workspace.currentPage === "settings" ? <SettingsPage />
-                    : <OverviewPage />;
+
+  useEventMonitor()
+  useSprintWorkTracking()
+  const workspace = useProjectStore((state) => state.workspace)
+  const planningPage = ["story-map", "gantt", "board"].includes(
+    workspace.currentPage,
+  )
+  const hideCollapsedInspector =
+    workspace.currentPage === "story-map" &&
+    workspace.backlogFullscreen &&
+    !workspace.inspectorOpen
+  const page = ["overview", "project-use-case", "settings"].includes(
+    workspace.currentPage,
+  ) ? (
+    <ProjectPage />
+  ) : workspace.currentPage === "release" ? (
+    <ReleasePage />
+  ) : workspace.currentPage === "story-map" ? (
+    <StoryMap />
+  ) : workspace.currentPage === "gantt" ? (
+    <Gantt />
+  ) : workspace.currentPage === "board" ? (
+    <ScrumBoard />
+  ) : ["sprint", "acceptance", "risks"].includes(workspace.currentPage) ? (
+    <SprintPage />
+  ) : workspace.currentPage === "assets" ? (
+    <AssetsPage />
+  ) : workspace.currentPage === "workload" ? (
+    <AnalyticsPage />
+  ) : (
+    <ProjectPage />
+  )
 
   return (
     <div className="flex h-full flex-col bg-[#F8FAFC]">
@@ -57,6 +72,7 @@ export default function App() {
       </div>
       <UmlSnapshotBackfill />
       <ToastHost />
+      <GlobalAiAssistant />
     </div>
-  );
+  )
 }

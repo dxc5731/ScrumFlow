@@ -1,3 +1,7 @@
+import { normalizeProjectUseCase, projectUseCaseDiagram, projectUseCaseFromCanvas } from "../utils/projectUseCase"
+import { captureWorkChanges, normalizeSprintBurndowns, observeSprintWork } from "./burndown"
+import { inheritedDelivery, normalizeReleases, releaseSummary, storySprintIssue, validReleaseDate } from "./release"
+import type { ReleaseEntity } from "../types"
 import { create } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
 import { z } from "zod"
@@ -10,6 +14,7 @@ import { revalidateReviewedProposal } from "../agents/meetingFinalRevalidation"
 import {
   CURRENT_SCHEMA_VERSION,
   createDemoProjectState,
+  createBaseDemoProjectState,
 } from "../data/demoProject"
 import type {
   AcceptanceCriterion,
@@ -52,7 +57,7 @@ import type {
   SubtaskEntity,
   TaskEntity,
   UserActivityEntity,
-  UserTaskEntity,
+  UmlDiagramData,
   WorkspaceState,
 } from "../types"
 import { createMeetingMemory } from "../agents/meetingContext"
@@ -107,7 +112,7 @@ export interface ActionResult {
 }
 
 export interface SprintStartCheck {
-  key: "goal" | "dates" | "stories" | "assignees" | "no_other_active"
+  key: "release" | "goal" | "dates" | "stories" | "assignees" | "no_other_active"
   label: string
   passed: boolean
   detail: string
@@ -138,6 +143,10 @@ export interface BlankProjectInput {
 }
 
 export interface ProjectActions {
+  createRelease: (input: Pick<ReleaseEntity, "name" | "goal" | "plannedDate"> & { status?: "planning" | "active" }) => ReleaseEntity
+  updateRelease: (id: string, patch: Partial<Pick<ReleaseEntity,"name"|"goal"|"plannedDate"|"status">>) => ActionResult
+  assignStoriesToRelease: (ids: string[], releaseId: string | null, options: { confirmed: boolean; reason: string; expected?: Record<string, {releaseId: string | null; sprintId: string | null}> }) => ActionResult
+
   refreshProjectEvents: (now?: Date) => void
   ignoreProjectEvent: (id: string) => void
   createMeeting: (targetType: "project" | "story" | "sprint", targetId: string, options?: MeetingStartOptions) => MeetingSession
@@ -215,6 +224,9 @@ export interface ProjectActions {
     targetIndex?: number,
   ) => ActionResult
   reorderBacklog: (id: string, targetIndex: number) => ActionResult
+  updateProjectUseCase: (diagram: UmlDiagramData) => ActionResult
+  addProjectUseCaseActor: (label: string) => ActionResult
+  arrangeProjectUseCase: () => ActionResult
   createActivity: (
     input: Pick<UserActivityEntity, "title"> & Partial<UserActivityEntity>,
   ) => UserActivityEntity
@@ -224,17 +236,7 @@ export interface ProjectActions {
     source?: ChangeSource,
   ) => ActionResult
   deleteActivity: (id: string) => ActionResult
-  createUserTask: (
-    activityId: string,
-    input?: Partial<UserTaskEntity>,
-  ) => UserTaskEntity
-  updateUserTask: (
-    id: string,
-    patch: Partial<UserTaskEntity>,
-    source?: ChangeSource,
-  ) => ActionResult
-  deleteUserTask: (id: string) => ActionResult
-  createEpic: (userTaskId: string, input?: Partial<EpicEntity>) => EpicEntity
+  createEpic: (goalId: string, input?: Partial<EpicEntity>) => EpicEntity
   updateEpic: (
     id: string,
     patch: Partial<EpicEntity>,
@@ -242,8 +244,7 @@ export interface ProjectActions {
   ) => ActionResult
   deleteEpic: (id: string) => ActionResult
   moveActivity: (id: string, targetIndex: number) => void
-  moveUserTask: (id: string, activityId: string, targetIndex: number) => void
-  moveEpic: (id: string, userTaskId: string, targetIndex: number) => void
+  moveEpic: (id: string, goalId: string, targetIndex: number) => void
   rescheduleItem: (
     type: ScheduleEntityType,
     id: string,
@@ -344,6 +345,7 @@ export interface ProjectActions {
   undoLastChange: () => ActionResult
   exportProjectJson: () => string
   importProjectJson: (json: string) => ActionResult
+  recordSprintWork: (now?: Date) => void
   resetDemoData: () => void
 }
 
@@ -361,9 +363,11 @@ const importSchema = z
 
 const dataKeys: (keyof ProjectDataState)[] = [
   "schemaVersion",
+  "releases",
   "project",
   "members",
   "activities",
+  "projectUseCase",
   "userTasks",
   "epics",
   "stories",
@@ -376,6 +380,7 @@ const dataKeys: (keyof ProjectDataState)[] = [
   "risks",
   "impactAnalyses",
   "sprintPulses",
+  "sprintBurndowns",
   "discussions",
   "history",
   "proposals",
@@ -616,7 +621,7 @@ function deriveAllStoryDeliveries(
 }
 
 export function sprintStartChecks(
-  state: Pick<ProjectDataState, "sprints" | "stories" | "tasks">,
+  state: Pick<ProjectDataState, "sprints" | "stories" | "tasks" | "releases">,
   sprintId: string,
 ): SprintStartCheck[] {
   const sprint = state.sprints[sprintId]
@@ -632,6 +637,7 @@ export function sprintStartChecks(
     (item) => item.id !== sprintId && item.status === "active",
   )
   return [
+    { key: "release", label: "Release 归属一致", passed: Boolean(sprint.releaseId && state.releases[sprint.releaseId] && stories.every(story => story.releaseId === sprint.releaseId)), detail: "Sprint 与所有 Story 需属于同一 Release" },
     {
       key: "goal",
       label: "已填写 Sprint Goal",
@@ -1488,6 +1494,7 @@ function normalizeProjectData(
         {
           id,
           name: raw.name ?? fallback?.name ?? "未命名 Sprint",
+          releaseId: raw.releaseId,
           goal: raw.goal ?? fallback?.goal ?? "",
           startDate:
             raw.startDate ?? fallback?.startDate ?? demo.project.startDate,
@@ -1520,6 +1527,9 @@ function normalizeProjectData(
           ...fallback,
           ...raw,
           id,
+          releaseId: raw.releaseId,
+          isReleaseCore: raw.isReleaseCore ?? false,
+          releaseChanges: raw.releaseChanges ?? [],
           expectedBenefit:
             raw.expectedBenefit ??
             raw.soThat ??
@@ -1731,7 +1741,7 @@ function normalizeProjectData(
   }).stories
   const epics = Object.fromEntries(
     Object.entries(rawEpics).map(([id, value]) => {
-      const persisted = (value ?? {}) as Partial<EpicEntity>
+      const { userTaskId: legacyParentId, ...persisted } = (value ?? {}) as Partial<EpicEntity> & { userTaskId?: string }
       const fallback = demo.epics[id]
       const raw = refreshDemoContent && fallback
         ? { ...persisted, startDate: fallback.startDate, endDate: fallback.endDate }
@@ -1749,7 +1759,7 @@ function normalizeProjectData(
           ...raw,
           id,
           title: raw.title ?? fallback?.title ?? "未命名 Epic",
-          userTaskId: raw.userTaskId ?? fallback?.userTaskId ?? "",
+          goalId: raw.goalId ?? (legacyParentId ? incoming.userTasks?.[legacyParentId]?.activityId : undefined) ?? fallback?.goalId ?? "",
           startDate: children.length
             ? [fallbackStart, ...children.map((child) => child.startDate)].sort()[0]
             : fallbackStart,
@@ -1761,21 +1771,25 @@ function normalizeProjectData(
       ]
     }),
   )
-  return {
+  return normalizeReleases({
     ...demo,
     ...incoming,
     schemaVersion: CURRENT_SCHEMA_VERSION,
+    releases: incoming.releases ?? ((incoming.schemaVersion ?? CURRENT_SCHEMA_VERSION) < 18 ? {} : demo.releases),
     project,
+    projectUseCase: normalizeProjectUseCase(incoming.activities ?? demo.activities, incoming.projectUseCase),
     members,
     assets,
     sprints,
     epics,
+    userTasks: {}, // Legacy intermediate layer is flattened on every load/import.
     stories: derivedStories,
     tasks: reconciledTasks,
     subtasks,
     dependencies,
     risks: incoming.risks ?? demo.risks,
-    impactAnalyses: incoming.impactAnalyses ?? demo.impactAnalyses,
+    impactAnalyses: incoming.impactAnalyses ? Object.values(incoming.impactAnalyses) : demo.impactAnalyses,
+    sprintBurndowns: normalizeSprintBurndowns(incoming.sprintBurndowns, sprints),
     sprintPulses: incoming.sprintPulses ?? demo.sprintPulses,
     discussions,
     proposals: Object.fromEntries(Object.entries(incoming.proposals ?? {}).map(([id, proposal]) => [id,
@@ -1791,7 +1805,7 @@ function normalizeProjectData(
       ...demo.workspace,
       ...(incoming.workspace ?? {}),
       currentPage:
-        incoming.workspace?.currentPage === "chat" || incoming.workspace?.currentPage === "release"
+        incoming.workspace?.currentPage === "chat"
           ? "overview"
           : incoming.workspace?.currentPage ?? demo.workspace.currentPage,
       ...(refreshDemoContent
@@ -1801,7 +1815,7 @@ function normalizeProjectData(
           }
         : {}),
     },
-  }
+  }, (incoming.schemaVersion ?? CURRENT_SCHEMA_VERSION) < 18 && !incoming.releases)
 }
 
 const initialDemoState = normalizeProjectData(createDemoProjectState())
@@ -2036,7 +2050,15 @@ export const PROPOSAL_SCHEMA_VERSION = 1
 /** The same actions/executor can run in an isolated, non-persisting sandbox. */
 export const createProjectStore = (sandbox?: ProjectDataState) => create<ProjectStore>()(
   persist(
-    (set, get) => ({
+    (baseSet, get) => {
+      const set = (partial: Partial<ProjectStore> | ((state: ProjectStore) => Partial<ProjectStore>)) => baseSet(state => {
+        const patch = typeof partial === "function" ? partial(state) : partial
+        const next = { ...state, ...patch }
+        return { ...patch,
+          ...(next.activities !== state.activities || next.projectUseCase !== state.projectUseCase ? { projectUseCase: normalizeProjectUseCase(next.activities, next.projectUseCase) } : {}),
+          sprintBurndowns: captureWorkChanges(state, next) }
+      })
+      return ({
       ...(sandbox ? structuredClone(sandbox) : createInitialProjectState()),
 
       refreshProjectEvents: (now = new Date()) => {
@@ -2602,18 +2624,21 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
           project,
           members,
           activities: {},
+          projectUseCase: normalizeProjectUseCase({}),
           userTasks: {},
           epics: {},
           stories: {},
           tasks: {},
           subtasks: {},
           sprints: {},
+          releases: {},
           acceptanceCriteria: {},
           dependencies: {},
           assets: {},
           risks: {},
           impactAnalyses: [],
           sprintPulses: {},
+          sprintBurndowns: {},
           discussions: {},
           history: [historyItem("project", projectId, "create", null, project, "ui")],
           proposals: {},
@@ -2685,27 +2710,85 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
         })),
 
       requestFocus: (type, id, view) =>
-        set((state) => ({
-          workspace: {
+        set((state) => {
+          const delivery = ["story", "task", "subtask"].includes(type) ? inheritedDelivery(state, type as "story" | "task" | "subtask", id) : null
+          return { workspace: {
             ...state.workspace,
             ...(view ? { currentPage: view, currentView: view } : {}),
+            ...(delivery ? {
+              ...(delivery.sprintId ? { selectedSprintId: delivery.sprintId } : {}),
+              releaseFilterId: delivery.releaseId ?? "unassigned",
+            } : {}),
             selectedObjectType: type,
             selectedObjectId: id,
             inspectorOpen: true,
             ganttHeatmapHighlight: null,
             focusRequest: { type, id, nonce: Date.now() },
-          },
-        })),
+          } }
+        }),
 
       selectSprint: (id) => {
         if (!get().sprints[id]) return { ok: false, message: "Sprint 不存在" }
         set((state) => ({
-          workspace: { ...state.workspace, selectedSprintId: id },
+          workspace: { ...state.workspace, selectedSprintId: id, releaseFilterId: "" },
         }))
         return { ok: true, message: "Sprint 已切换" }
       },
 
+      createRelease: (input) => {
+        if (get().workspace.actorMode !== "po") throw new Error("只有 PO 可以创建 Release")
+        if (!input.name.trim() || !input.goal.trim() || !validReleaseDate(input.plannedDate)) throw new Error("请填写版本名称、Release Goal 和有效的计划发布日期")
+        if (input.status && !["planning", "active"].includes(input.status)) throw new Error("新版本不能直接标记为已发布")
+        const release: ReleaseEntity = { id: makeId("release"), name: input.name.trim(), goal: input.goal.trim(), plannedDate: input.plannedDate, status: input.status ?? "planning", publishedAt: null, createdAt: nowIso(), updatedAt: nowIso() }
+        set(state => ({ releases: { ...state.releases, [release.id]: release }, history: appendHistory(state.history, [historyItem("release",release.id,"create",null,release,"ui")]) }))
+        return release
+      },
+      updateRelease: (id, patch) => {
+        const state = get(), current = state.releases[id]
+        if (state.workspace.actorMode !== "po") return { ok: false, message: "只有 PO 可以修改或发布 Release" }
+        if (!current) return { ok: false, message: "Release 不存在" }
+        if (current.status === "released") return { ok: false, message: "已发布版本保留发布记录，不能直接修改" }
+        const next = { ...current, name: patch.name?.trim() ?? current.name, goal: patch.goal?.trim() ?? current.goal, plannedDate: patch.plannedDate ?? current.plannedDate, status: patch.status ?? current.status, updatedAt: nowIso() }
+        if (!next.name || !next.goal || !validReleaseDate(next.plannedDate) || !["planning","active","released"].includes(next.status)) return { ok: false, message: "请检查版本名称、目标、日期和状态" }
+        if (next.status === "released") {
+          const summary = releaseSummary(state, id, new Date())
+          if (!summary.canPublish) return { ok: false, message: !summary.stories.length ? "空 Release 不能发布" : summary.severe.length ? "仍有严重阻塞，暂不能发布" : "核心 Story 尚未全部验收；未标记核心时需全部 Story 验收" }
+          next.publishedAt = nowIso()
+        }
+        set(state => ({ releases: { ...state.releases,[id]:next }, history: appendHistory(state.history,[historyItem("release",id,"update",current,next,"ui")]) }))
+        return { ok: true, message: next.status === "released" ? "Release 已发布" : "Release 已保存" }
+      },
+      assignStoriesToRelease: (ids, releaseId, options) => {
+        const state = get()
+        if (state.workspace.actorMode !== "po") return { ok: false, message: "只有 PO 可以调整 Release" }
+        if (!options.confirmed) return { ok: false, message: "请确认 Release 调整及当前 Sprint 归属影响" }
+        if (releaseId && (!state.releases[releaseId] || state.releases[releaseId].status === "released")) return { ok: false, message: "请选择尚未发布的 Release" }
+        const selected = [...new Set(ids)].map(id => state.stories[id])
+        if (!selected.length || selected.some(story => !story)) return { ok: false, message: "请选择存在的 Story" }
+        for (const story of selected) {
+          const expected = options.expected?.[story.id]
+          if (options.expected && (!expected || expected.releaseId !== (story.releaseId ?? null) || expected.sprintId !== story.sprintId)) return { ok: false, message: "Story 归属已变化，请重新打开调整窗口确认" }
+          if ((story.releaseId ?? null) === releaseId) continue
+          if (story.sprintId && state.sprints[story.sprintId]?.status === "closed") return { ok: false, message: "已关闭 Sprint 中的 Story 不能调整归属" }
+          if (state.releases[story.releaseId ?? ""]?.status === "released" && (story.isReleaseCore || story.deliveryStatus === "accepted")) return { ok: false, message: "已发布版本的核心或已验收 Story 保留原归属" }
+          if ((story.releaseId || story.sprintId) && !options.reason.trim()) return { ok: false, message: "请填写 Release 调整原因" }
+        }
+        const changed = selected.filter(story => (story.releaseId ?? null) !== releaseId)
+        set(current => {
+          const stories = { ...current.stories }, history: ChangeHistoryItem[] = []
+          for (const story of changed) {
+            const sprintId = story.sprintId && current.sprints[story.sprintId]?.releaseId === releaseId ? story.sprintId : null
+            const record = { fromReleaseId: story.releaseId ?? null, toReleaseId: releaseId, previousSprintId: story.sprintId, reason: options.reason.trim() || "首次分配交付版本", at: nowIso(), byId: current.workspace.currentUserId }
+            stories[story.id] = { ...story, releaseId, sprintId, deliveryStatus: story.deliveryStatus === "accepted" ? "accepted" : sprintId ? "planned" : "backlog", releaseChanges: [...(story.releaseChanges ?? []),record], updatedAt: nowIso() }
+            history.push(historyItem("story",story.id,"releaseAssignment",{releaseId:story.releaseId ?? null,sprintId:story.sprintId},{releaseId,sprintId,reason:record.reason},"ui"))
+          }
+          return { stories, history: appendHistory(current.history,history) }
+        })
+        return { ok: true, message: changed.length + " 个 Story 的 Release 已更新；不兼容的 Sprint 归属已清除" }
+      },
+
       createSprint: (input) => {
+        if (!input.releaseId || !get().releases[input.releaseId]) throw new Error("请先选择 Release")
         if (get().workspace.actorMode !== "po") {
           throw new Error("只有 PO 可以创建 Sprint")
         }
@@ -2723,6 +2806,7 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
         const sprint: SprintEntity = {
           id,
           name: input.name.trim() || "未命名 Sprint",
+          releaseId: input.releaseId,
           goal: input.goal.trim(),
           startDate: input.startDate,
           endDate: input.endDate,
@@ -2755,6 +2839,10 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
         }
         const current = get().sprints[id]
         if (!current) return { ok: false, message: "Sprint 不存在" }
+        if (patch.releaseId !== undefined && patch.releaseId !== current.releaseId) {
+          if (Object.values(get().stories).some(story => story.sprintId === id) || current.status !== "planning") return { ok: false, message: "已有 Story 或已启动的 Sprint 不能更换 Release，请先调整 Story 归属" }
+          if (!patch.releaseId || !get().releases[patch.releaseId]) return { ok: false, message: "请选择有效的 Release" }
+        }
         const next = { ...current, ...patch, id, updatedAt: nowIso() }
         if (next.endDate < next.startDate)
           return { ok: false, message: "Sprint 结束日期不能早于开始日期" }
@@ -2805,6 +2893,7 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
           return { ok: false, message: "已关闭的 Sprint 不能加入 Story" }
         }
         const uniqueIds = [...new Set(storyIds)]
+        for (const id of uniqueIds) { const story = get().stories[id]; if (story) { const issue = storySprintIssue(get(), story, sprintId); if (issue) return { ok: false, message: issue } } }
         const invalid = uniqueIds
           .map((id) => get().stories[id])
           .filter(
@@ -2934,6 +3023,8 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
         for (const story of unfinished) {
           const target = decisions.get(story.id)
           if (target !== "backlog") {
+            const issue = storySprintIssue(state, story, target ?? null)
+            if (issue) return { ok: false, message: issue }
             const targetSprint = target ? state.sprints[target] : null
             if (!targetSprint || targetSprint.id === sprintId || targetSprint.status === "closed") {
               return { ok: false, message: `${story.title} 的目标 Sprint 无效` }
@@ -3016,9 +3107,12 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
       },
 
       updateStory: (id, patch, source = "ui") => {
+        if ("releaseId" in patch || "releaseChanges" in patch) return { ok: false, message: "请通过 Release 调整确认窗口修改归属" }
+        if ("isReleaseCore" in patch && (get().workspace.actorMode !== "po" || source === "agent")) return { ok: false, message: "核心 Story 必须由 PO 确认" }
+        if ("isReleaseCore" in patch && get().releases[get().stories[id]?.releaseId ?? ""]?.status === "released") return { ok: false, message: "已发布 Release 的核心范围不能修改" }
         const current = get().stories[id]
         if (!current) return { ok: false, message: "Story 不存在" }
-        if (current.sprintId && get().sprints[current.sprintId]?.status === "closed") {
+        if (current.sprintId && get().sprints[current.sprintId]?.status === "closed" && !Object.keys(patch).every(key => key === "isReleaseCore")) {
           return { ok: false, message: "已关闭 Sprint 中的 Story 不能修改" }
         }
         if (
@@ -3116,10 +3210,17 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
       },
 
       createStory: (input) => {
+        if (input.releaseId && get().workspace.actorMode !== "po") throw new Error("Story 的 Release 必须由 PO 确认")
+        if (input.releaseId && (!get().releases[input.releaseId] || get().releases[input.releaseId].status === "released")) throw new Error("请选择有效且尚未发布的 Release")
+        const issue = storySprintIssue(get(), input, input.sprintId ?? null)
+        if (issue) throw new Error(issue)
         const id = input.id ?? makeId("story")
         const story: StoryEntity = {
           id,
           title: input.title.trim() || "未命名 Story",
+          releaseId: input.releaseId ?? null,
+          isReleaseCore: get().workspace.actorMode === "po" && Boolean(input.isReleaseCore),
+          releaseChanges: [],
           as: input.as ?? "",
           iWant: input.iWant ?? "",
           soThat: input.soThat ?? "",
@@ -3299,6 +3400,8 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
         if (epicId && !get().epics[epicId])
           return { ok: false, message: "目标 Epic 不存在" }
 
+        const issue = storySprintIssue(get(), story, sprintId)
+        if (issue) return { ok: false, message: issue }
         const before = structuredClone(story)
         set((state) => {
           let stories = { ...state.stories }
@@ -3393,11 +3496,32 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
         return { ok: true, message: "Backlog 顺序已保存" }
       },
 
+      updateProjectUseCase: (diagram) => {
+        try {
+          const current = get()
+          const projectUseCase = projectUseCaseFromCanvas(current, diagram)
+          if (JSON.stringify(projectUseCase) === JSON.stringify(current.projectUseCase)) return { ok: true, message: "项目用例图已同步" }
+          set(state => ({projectUseCase, history: appendHistory(state.history, [historyItem("project",state.project.id,"useCaseDiagram",state.projectUseCase,projectUseCase,"ui")])}))
+          return { ok: true, message: "项目用例图已保存" }
+        } catch (error) { return { ok:false,message:error instanceof Error ? error.message : "项目用例图保存失败" } }
+      },
+      addProjectUseCaseActor: (label) => {
+        if (!label.trim()) return { ok:false,message:"参与者名称不能为空" }
+        const diagram = projectUseCaseDiagram(get())
+        const count = diagram.nodes.filter(node=>node.kind === "actor").length
+        return get().updateProjectUseCase({...diagram,nodes:[...diagram.nodes,{id:makeId("actor"),kind:"actor",label:label.trim(),x:64,y:80+count*140,details:[]}]})
+      },
+      arrangeProjectUseCase: () => {
+        const diagram = projectUseCaseDiagram(get())
+        const positions = normalizeProjectUseCase(get().activities).goalPositions
+        let actorIndex=0
+        return get().updateProjectUseCase({...diagram,nodes:diagram.nodes.map(node => node.kind === "actor" ? {...node,x:64,y:80+actorIndex++*160} : {...node,...positions[node.id.slice(5)]})})
+      },
       createActivity: (input) => {
         const id = input.id ?? makeId("activity")
         const activity: UserActivityEntity = {
           id,
-          title: input.title.trim() || "未命名 Activity",
+          title: input.title.trim() || "未命名目标",
           domain: input.domain ?? "other",
           order: input.order ?? ordered(get().activities, () => true).length,
         }
@@ -3412,9 +3536,9 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
 
       updateActivity: (id, patch, source = "ui") => {
         const current = get().activities[id]
-        if (!current) return { ok: false, message: "User Activity 不存在" }
+        if (!current) return { ok: false, message: "目标不存在" }
         const title = patch.title === undefined ? current.title : patch.title.trim()
-        if (!title) return { ok: false, message: "Activity 名称不能为空" }
+        if (!title) return { ok: false, message: "目标名称不能为空" }
         const next: UserActivityEntity = { ...current, ...patch, id, title }
         const changes = (Object.keys(next) as (keyof UserActivityEntity)[])
           .filter(
@@ -3435,20 +3559,15 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
           activities: { ...state.activities, [id]: next },
           history: appendHistory(state.history, changes),
         }))
-        return { ok: true, message: "User Activity 已保存" }
+        return { ok: true, message: "目标 已保存" }
       },
 
       deleteActivity: (id) => {
         const activity = get().activities[id]
-        if (!activity) return { ok: false, message: "User Activity 不存在" }
-        const userTaskIds = new Set(
-          Object.values(get().userTasks)
-            .filter((task) => task.activityId === id)
-            .map((task) => task.id),
-        )
+        if (!activity) return { ok: false, message: "目标 不存在" }
         const epicIds = new Set(
           Object.values(get().epics)
-            .filter((epic) => userTaskIds.has(epic.userTaskId))
+            .filter((epic) => epic.goalId === id)
             .map((epic) => epic.id),
         )
         if (
@@ -3472,11 +3591,6 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
           return {
             ...cascade,
             activities: resequence(activities, activityIds),
-            userTasks: Object.fromEntries(
-              Object.entries(state.userTasks).filter(
-                ([userTaskId]) => !userTaskIds.has(userTaskId),
-              ),
-            ),
             epics: Object.fromEntries(
               Object.entries(state.epics).filter(
                 ([epicId]) => !epicIds.has(epicId),
@@ -3487,121 +3601,11 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
             ]),
           }
         })
-        return { ok: true, message: "User Activity 及其完整子树已删除" }
+        return { ok: true, message: "目标 及其完整子树已删除" }
       },
 
-      createUserTask: (activityId, input = {}) => {
-        if (!get().activities[activityId]) throw new Error("User Activity 不存在")
-        const id = input.id ?? makeId("user-task")
-        const userTask: UserTaskEntity = {
-          id,
-          title: input.title?.trim() || "未命名 User Task",
-          activityId,
-          order:
-            input.order ??
-            ordered(
-              get().userTasks,
-              (task) => task.activityId === activityId,
-            ).length,
-        }
-        set((state) => ({
-          userTasks: { ...state.userTasks, [id]: userTask },
-          history: appendHistory(state.history, [
-            historyItem("userTask", id, "create", null, userTask, "ui"),
-          ]),
-        }))
-        return userTask
-      },
-
-      updateUserTask: (id, patch, source = "ui") => {
-        const current = get().userTasks[id]
-        if (!current) return { ok: false, message: "User Task 不存在" }
-        const title = patch.title === undefined ? current.title : patch.title.trim()
-        if (!title) return { ok: false, message: "User Task 名称不能为空" }
-        const activityId = patch.activityId ?? current.activityId
-        if (!get().activities[activityId])
-          return { ok: false, message: "目标 User Activity 不存在" }
-        set((state) => {
-          let userTasks = { ...state.userTasks }
-          if (activityId !== current.activityId) {
-            const oldIds = ordered(
-              userTasks,
-              (task) =>
-                task.id !== id && task.activityId === current.activityId,
-            ).map((task) => task.id)
-            userTasks = resequence(userTasks, oldIds)
-            const targetIds = ordered(
-              userTasks,
-              (task) => task.id !== id && task.activityId === activityId,
-            ).map((task) => task.id)
-            targetIds.push(id)
-            userTasks[id] = { ...current, ...patch, id, title, activityId }
-            userTasks = resequence(userTasks, targetIds)
-          } else {
-            userTasks[id] = { ...current, ...patch, id, title, activityId }
-          }
-          return {
-            userTasks,
-            history: appendHistory(state.history, [
-              historyItem(
-                "userTask",
-                id,
-                "update",
-                current,
-                userTasks[id],
-                source,
-              ),
-            ]),
-          }
-        })
-        return { ok: true, message: "User Task 已保存" }
-      },
-
-      deleteUserTask: (id) => {
-        const userTask = get().userTasks[id]
-        if (!userTask) return { ok: false, message: "User Task 不存在" }
-        const epicIds = new Set(
-          Object.values(get().epics)
-            .filter((epic) => epic.userTaskId === id)
-            .map((epic) => epic.id),
-        )
-        if (
-          Object.values(get().stories).some(
-            (story) =>
-              story.epicId &&
-              epicIds.has(story.epicId) &&
-              story.sprintId &&
-              get().sprints[story.sprintId]?.status === "closed",
-          )
-        ) {
-          return { ok: false, message: "该层级包含已关闭 Sprint 的 Story，不能删除" }
-        }
-        set((state) => {
-          const cascade = removeEpicSubtrees(state, epicIds)
-          const userTasks = { ...state.userTasks }
-          delete userTasks[id]
-          const siblingIds = ordered(
-            userTasks,
-            (task) => task.activityId === userTask.activityId,
-          ).map((task) => task.id)
-          return {
-            ...cascade,
-            userTasks: resequence(userTasks, siblingIds),
-            epics: Object.fromEntries(
-              Object.entries(state.epics).filter(
-                ([epicId]) => !epicIds.has(epicId),
-              ),
-            ),
-            history: appendHistory(state.history, [
-              historyItem("userTask", id, "delete", userTask, null, "ui"),
-            ]),
-          }
-        })
-        return { ok: true, message: "User Task 及其完整子树已删除" }
-      },
-
-      createEpic: (userTaskId, input = {}) => {
-        if (!get().userTasks[userTaskId]) throw new Error("User Task 不存在")
+      createEpic: (goalId, input = {}) => {
+        if (!get().activities[goalId]) throw new Error("目标 不存在")
         const id = input.id ?? makeId("epic")
         const selectedSprint = get().sprints[get().workspace.selectedSprintId]
         const startDate =
@@ -3612,12 +3616,12 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
         const epic: EpicEntity = {
           id,
           title: input.title?.trim() || "未命名 Epic",
-          userTaskId,
+          goalId,
           startDate,
           endDate,
           order:
             input.order ??
-            ordered(get().epics, (item) => item.userTaskId === userTaskId)
+            ordered(get().epics, (item) => item.goalId === goalId)
               .length,
         }
         set((state) => ({
@@ -3654,27 +3658,27 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
         }
         const title = patch.title === undefined ? current.title : patch.title.trim()
         if (!title) return { ok: false, message: "Epic 名称不能为空" }
-        const userTaskId = patch.userTaskId ?? current.userTaskId
-        if (!get().userTasks[userTaskId])
-          return { ok: false, message: "目标 User Task 不存在" }
+        const goalId = patch.goalId ?? current.goalId
+        if (!get().activities[goalId])
+          return { ok: false, message: "目标不存在" }
         set((state) => {
           let epics = { ...state.epics }
-          if (userTaskId !== current.userTaskId) {
+          if (goalId !== current.goalId) {
             const oldIds = ordered(
               epics,
               (epic) =>
-                epic.id !== id && epic.userTaskId === current.userTaskId,
+                epic.id !== id && epic.goalId === current.goalId,
             ).map((epic) => epic.id)
             epics = resequence(epics, oldIds)
             const targetIds = ordered(
               epics,
-              (epic) => epic.id !== id && epic.userTaskId === userTaskId,
+              (epic) => epic.id !== id && epic.goalId === goalId,
             ).map((epic) => epic.id)
             targetIds.push(id)
-            epics[id] = { ...current, ...patch, id, title, userTaskId }
+            epics[id] = { ...current, ...patch, id, title, goalId }
             epics = resequence(epics, targetIds)
           } else {
-            epics[id] = { ...current, ...patch, id, title, userTaskId }
+            epics[id] = { ...current, ...patch, id, title, goalId }
           }
           return {
             epics,
@@ -3713,7 +3717,7 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
           delete epics[id]
           const siblingIds = ordered(
             epics,
-            (item) => item.userTaskId === epic.userTaskId,
+            (item) => item.goalId === epic.goalId,
           ).map((item) => item.id)
           return {
             ...cascade,
@@ -3747,54 +3751,22 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
           }
         }),
 
-      moveUserTask: (id, activityId, targetIndex) =>
-        set((state) => {
-          const current = state.userTasks[id]
-          if (!current || !state.activities[activityId]) return state
-          let userTasks = { ...state.userTasks }
-          const oldIds = ordered(
-            userTasks,
-            (item) => item.id !== id && item.activityId === current.activityId,
-          ).map((item) => item.id)
-          userTasks = resequence(userTasks, oldIds)
-          const targetIds = ordered(
-            userTasks,
-            (item) => item.id !== id && item.activityId === activityId,
-          ).map((item) => item.id)
-          targetIds.splice(Math.min(targetIndex, targetIds.length), 0, id)
-          userTasks[id] = { ...current, activityId }
-          userTasks = resequence(userTasks, targetIds)
-          return {
-            userTasks,
-            history: appendHistory(state.history, [
-              historyItem(
-                "userTask",
-                id,
-                "move",
-                current,
-                userTasks[id],
-                "drag",
-              ),
-            ]),
-          }
-        }),
-
-      moveEpic: (id, userTaskId, targetIndex) =>
+      moveEpic: (id, goalId, targetIndex) =>
         set((state) => {
           const current = state.epics[id]
-          if (!current || !state.userTasks[userTaskId]) return state
+          if (!current || !state.activities[goalId]) return state
           let epics = { ...state.epics }
           const oldIds = ordered(
             epics,
-            (item) => item.id !== id && item.userTaskId === current.userTaskId,
+            (item) => item.id !== id && item.goalId === current.goalId,
           ).map((item) => item.id)
           epics = resequence(epics, oldIds)
           const targetIds = ordered(
             epics,
-            (item) => item.id !== id && item.userTaskId === userTaskId,
+            (item) => item.id !== id && item.goalId === goalId,
           ).map((item) => item.id)
           targetIds.splice(Math.min(targetIndex, targetIds.length), 0, id)
-          epics[id] = { ...current, userTaskId }
+          epics[id] = { ...current, goalId }
           epics = resequence(epics, targetIds)
           return {
             epics,
@@ -5383,6 +5355,7 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
           .reverse()
           .find((item) => item.source !== "undo" && item.objectType !== "impact")
         if (!last) return { ok: false, message: "没有可撤销的修改" }
+        if (last.field === "releaseAssignment" || last.objectType === "release") return { ok: false, message: "Release 变更需要由 PO 在 Release 管理中确认，不能直接撤销" }
         if (
           last.field === "schedule" &&
           ["epic", "story", "task", "subtask"].includes(last.objectType) &&
@@ -5431,7 +5404,7 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
               ]),
             }))
           } else {
-            get().updateStory(
+            return get().updateStory(
               last.objectId,
               { [last.field]: last.before } as Partial<StoryEntity>,
               "undo",
@@ -5470,17 +5443,7 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
           typeof last.before === "number"
         ) {
           get().moveActivity(last.objectId, last.before)
-          return { ok: true, message: "已撤销 Activity 移动" }
-        }
-        if (
-          last.objectType === "userTask" &&
-          state.userTasks[last.objectId] &&
-          last.before &&
-          typeof last.before === "object"
-        ) {
-          const before = last.before as UserTaskEntity
-          get().moveUserTask(last.objectId, before.activityId, before.order)
-          return { ok: true, message: "已撤销 User Task 移动" }
+          return { ok: true, message: "已撤销目标 移动" }
         }
         if (
           last.objectType === "epic" &&
@@ -5489,7 +5452,7 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
           typeof last.before === "object"
         ) {
           const before = last.before as EpicEntity
-          get().moveEpic(last.objectId, before.userTaskId, before.order)
+          get().moveEpic(last.objectId, before.goalId, before.order)
           return { ok: true, message: "已撤销 Epic 移动" }
         }
         return { ok: false, message: "该操作暂不支持撤销" }
@@ -5527,8 +5490,12 @@ export const createProjectStore = (sandbox?: ProjectDataState) => create<Project
         }
       },
 
-      resetDemoData: () => set(createInitialProjectState()),
-    }),
+      recordSprintWork: (now = new Date()) => {
+        const records = observeSprintWork(get(), now)
+        if (records !== get().sprintBurndowns) set({ sprintBurndowns: records })
+      },
+      resetDemoData: () => set(normalizeProjectData(createDemoProjectState())),
+    })},
     {
       name: "scrumflow-course-project-v2",
       version: CURRENT_SCHEMA_VERSION,
@@ -5556,5 +5523,6 @@ export const useProjectStore = createProjectStore()
 export const projectDataSnapshot = dataSnapshot
 
 export function resetProjectStoreForTests() {
-  useProjectStore.setState({ ...createInitialProjectState() })
+  // Existing action regressions intentionally use a stable, known execution fixture.
+  useProjectStore.setState(normalizeProjectData(createBaseDemoProjectState()))
 }

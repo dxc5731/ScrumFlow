@@ -30,7 +30,7 @@ export function projectFactsForModel(state: ProjectDataState, context: MeetingCo
     project: state.project, asOf: new Date().toLocaleDateString("sv-SE"),
     scope: focusedIds.length ? { storyIds: focusedIds } : { projectId: state.project.id },
     members: Object.values(state.members), sprints: Object.values(state.sprints),
-    activities: Object.values(state.activities), userTasks: Object.values(state.userTasks), epics: Object.values(state.epics),
+    releases: Object.values(state.releases), goals: Object.values(state.activities), epics: Object.values(state.epics),
     stories, tasks, subtasks: Object.values(state.subtasks).filter(item => taskIds.has(item.taskId)),
     acceptanceCriteria: Object.values(state.acceptanceCriteria).filter(item => storyIds.has(item.storyId)),
     dependencies: Object.values(state.dependencies),

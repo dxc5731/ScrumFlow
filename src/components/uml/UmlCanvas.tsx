@@ -266,14 +266,14 @@ function toCanvasNodes(diagram: UmlDiagramData): CanvasNode[] {
   }))
 }
 
-function toCanvasEdges(diagram: UmlDiagramData): Edge[] {
+function toCanvasEdges(diagram: UmlDiagramData, projectGoals = false): Edge[] {
   return diagram.edges.map((edge) => {
     const handles = inferUmlEdgeHandles(diagram, edge)
     return ({
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    label: edge.label || relationLabel[edge.relation],
+    label: edge.label || (projectGoals && edge.relation === "association" ? "" : relationLabel[edge.relation]),
     sourceHandle: diagram.kind === "sequence" ? `${edge.id}-source` : handles.sourceHandle,
     targetHandle: diagram.kind === "sequence" ? `${edge.id}-target` : handles.targetHandle,
     type: "umlEdge",
@@ -315,21 +315,29 @@ export default function UmlCanvas({
   onChange,
   captureRef,
   captureOnly = false,
+  projectGoalControls,
 }: {
   diagram: UmlDiagramData
   onChange: (diagram: UmlDiagramData) => void
   captureRef?: RefObject<HTMLDivElement | null>
   captureOnly?: boolean
+  projectGoalControls?: {
+    onCreateGoal: () => void
+    onCreateActor: () => void
+    onEditNode: (node: UmlNodeEntity) => void
+    onDeleteGoal: (nodeId: string) => void
+    onLocateGoal: (nodeId: string) => void
+  }
 }) {
   const [nodes, setNodes] = useState<CanvasNode[]>(() => toCanvasNodes(diagram))
-  const [edges, setEdges] = useState<Edge[]>(() => toCanvasEdges(diagram))
+  const [edges, setEdges] = useState<Edge[]>(() => toCanvasEdges(diagram, Boolean(projectGoalControls)))
   const [relation, setRelation] = useState<UmlRelationType>(availableRelations(diagram)[0])
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
 
   useEffect(() => {
     setNodes(toCanvasNodes(diagram))
-    setEdges(toCanvasEdges(diagram))
+    setEdges(toCanvasEdges(diagram, Boolean(projectGoalControls)))
   }, [diagram])
 
   useEffect(() => {
@@ -414,6 +422,10 @@ export default function UmlCanvas({
   }
 
   const deleteSelection = () => {
+    if (selectedNode?.kind === "use-case" && projectGoalControls) {
+      projectGoalControls.onDeleteGoal(selectedNode.id)
+      return
+    }
     if (selectedNodeId) {
       onChange({
         ...diagram,
@@ -465,11 +477,11 @@ export default function UmlCanvas({
         fitViewOptions={{ padding: 0.24, maxZoom: 1.15 }}
         minZoom={0.25}
         maxZoom={2}
-        deleteKeyCode={captureOnly ? null : ["Backspace", "Delete"]}
+        deleteKeyCode={captureOnly || projectGoalControls ? null : ["Backspace", "Delete"]}
         proOptions={{ hideAttribution: true }}
       >
         <Background color="#D0D5DD" gap={24} size={1} />
-        {!captureOnly && <MiniMap pannable zoomable nodeColor="#EAECF0" maskColor="rgba(248,250,252,.72)" />}
+        {!captureOnly && !projectGoalControls && <MiniMap pannable zoomable nodeColor="#EAECF0" maskColor="rgba(248,250,252,.72)" />}
         {!captureOnly && <Controls showInteractive={false} />}
       </ReactFlow>
     </div>
@@ -478,9 +490,12 @@ export default function UmlCanvas({
   if (captureOnly) return flow
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col" onKeyDownCapture={event => {
+      if (!projectGoalControls || !["Backspace","Delete"].includes(event.key) || (event.target as HTMLElement).closest("input, textarea, select, [contenteditable=true]")) return
+      if (selectedNodeId || selectedEdgeId) { event.preventDefault(); event.stopPropagation(); deleteSelection() }
+    }}>
       <div className="flex min-h-12 flex-wrap items-center gap-2 border-b border-[#E2E7EE] bg-white px-3 py-2">
-        <button className="secondary-button" onClick={addNode}><Plus size={13} />新增节点</button>
+        {projectGoalControls ? <><button className="secondary-button" onClick={projectGoalControls.onCreateGoal}><Plus size={13} />新增用例 / 目标</button><button className="secondary-button" onClick={projectGoalControls.onCreateActor}><CircleUserRound size={13}/>新增参与者</button></> : <button className="secondary-button" onClick={addNode}><Plus size={13} />新增节点</button>}
         <span className="text-[10px] text-[#667085]">新连线类型</span>
         <select className="filter-select" value={relation} onChange={(event) => setRelation(event.target.value as UmlRelationType)}>
           {relations.map((item) => <option key={item} value={item}>{relationLabel[item]}</option>)}
@@ -496,11 +511,11 @@ export default function UmlCanvas({
           {!selectedNode && !selectedEdge && <div className="py-12 text-center text-[11px] text-[#98A2B3]">选择节点或连线后编辑属性</div>}
           {selectedNode && <div className="space-y-3">
             <div className="text-xs font-semibold text-[#344054]">节点属性</div>
-            <label className="block text-[10px] text-[#667085]">名称<input className="form-input mt-1" value={selectedNode.label} onChange={(event) => updateNode({ label: event.target.value })} /></label>
-            {diagram.kind === "use-case" && <label className="block text-[10px] text-[#667085]">节点类型<select className="form-input mt-1" value={selectedNode.kind} onChange={(event) => updateNode({ kind: event.target.value as UmlNodeKind })}><option value="actor">参与者</option><option value="use-case">用例</option></select></label>}
+            {projectGoalControls ? <div className="space-y-2"><p className="text-[10px] text-[#667085]">{selectedNode.kind === "use-case" ? "目标 / 用例名称" : "参与者名称"}</p><p className="break-words text-sm font-medium text-[#344054]">{selectedNode.label}</p><button className="secondary-button w-full" onClick={()=>projectGoalControls.onEditNode(selectedNode)}>编辑名称</button>{selectedNode.kind === "use-case" && <><p className="text-[10px] leading-relaxed text-[#667085]">与用户故事地图最顶层目标一一对应，共用同一名称。</p><button className="secondary-button w-full" onClick={()=>projectGoalControls.onLocateGoal(selectedNode.id)}>定位到用户地图</button></>}</div> : <label className="block text-[10px] text-[#667085]">名称<input className="form-input mt-1" value={selectedNode.label} onChange={(event) => updateNode({ label: event.target.value })} /></label>}
+            {!projectGoalControls && diagram.kind === "use-case" && <label className="block text-[10px] text-[#667085]">节点类型<select className="form-input mt-1" value={selectedNode.kind} onChange={(event) => updateNode({ kind: event.target.value as UmlNodeKind })}><option value="actor">参与者</option><option value="use-case">用例</option></select></label>}
             {selectedNode.kind === "class" && <label className="block text-[10px] text-[#667085]">属性和方法<textarea className="form-input mt-1 min-h-44 resize-y font-mono" value={selectedNode.details.join("\n")} onChange={(event) => updateNode({ details: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean) })} placeholder="- name: string\n+ save(): void" /></label>}
             <div className="text-[10px] text-[#98A2B3]">位置 {Math.round(selectedNode.x)}, {Math.round(selectedNode.y)}</div>
-            <button className="secondary-button w-full text-[#B42318]" onClick={deleteSelection}><Trash2 size={13} />删除节点</button>
+            <button className="secondary-button w-full text-[#B42318]" onClick={deleteSelection}><Trash2 size={13} />{projectGoalControls && selectedNode.kind === "use-case" ? "删除用例及对应目标" : "删除节点"}</button>
           </div>}
           {selectedEdge && <div className="space-y-3">
             <div className="text-xs font-semibold text-[#344054]">连线属性</div>

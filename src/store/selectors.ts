@@ -69,10 +69,10 @@ export function selectUserTasks(state: ProjectDataState, activityId?: string) {
   )
 }
 
-export function selectEpics(state: ProjectDataState, userTaskId?: string) {
+export function selectEpics(state: ProjectDataState, goalId?: string) {
   return byOrder(
     Object.values(state.epics).filter(
-      (epic) => !userTaskId || epic.userTaskId === userTaskId,
+      (epic) => !goalId || epic.goalId === goalId,
     ),
   )
 }

@@ -1,9 +1,9 @@
-import { useMemo, useRef, useState } from "react"
+import ReleaseFilter from "./planning/ReleaseFilter"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   Bell,
   BarChart3,
   CalendarRange,
-  ClipboardCheck,
   ChevronDown,
   Columns3,
   Download,
@@ -15,7 +15,6 @@ import {
   RotateCcw,
   Search,
   ShieldCheck,
-  Settings2,
   Home,
   Images,
   TimerReset,
@@ -39,29 +38,27 @@ const views = [
 const workspaceMenuGroups = [
   {
     label: "项目",
-    items: [{ id: "overview" as const, label: "项目概览", icon: Home }],
+    items: [{ id: "overview" as const, label: "项目", icon: Home }],
   },
   {
     label: "规划与交付",
     items: [
       ...views,
+      { id: "release" as const, label: "Release 管理", icon: CalendarRange },
       { id: "sprint" as const, label: "Sprint 管理", icon: TimerReset },
-      { id: "acceptance" as const, label: "成果验收", icon: ClipboardCheck },
     ],
   },
   {
     label: "治理与分析",
     items: [
-      { id: "risks" as const, label: "风险登记册", icon: ShieldCheck },
 
       { id: "workload" as const, label: "团队与 Sprint 分析", icon: BarChart3 },
     ],
   },
   {
-    label: "资产与设置",
+    label: "资产",
     items: [
       { id: "assets" as const, label: "设计资产与 UML", icon: Images },
-      { id: "settings" as const, label: "项目设置", icon: Settings2 },
     ],
   },
 ]
@@ -88,6 +85,11 @@ export default function CanvasTopBar() {
   const [menu, setMenu] = useState<"nav" | "tools" | "notice" | null>(null)
   const [demoOpen, setDemoOpen] = useState(false)
   const demo = useProjectStore(s => s.meetingSessions[classroomDemoId])
+  useEffect(() => {
+    if (workspace.aiFocusRequest?.type !== "proposals") return
+    setMenu("notice")
+    setWorkspace({ aiFocusRequest: undefined })
+  }, [workspace.aiFocusRequest?.nonce])
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [exportingView, setExportingView] = useState<"story-map" | "gantt" | null>(null)
@@ -185,7 +187,7 @@ export default function CanvasTopBar() {
         <div className="flex min-w-0 items-center gap-1.5 text-xs">
           <b className="text-[#172033]">ScrumFlow</b>
           <span className="text-[#D0D5DD]">/</span>
-          <span className="max-w-44 truncate font-medium text-[#475467]">
+          <span className="max-w-28 truncate font-medium text-[#475467] xl:max-w-44">
             {project.name}
           </span>
         </div>
@@ -225,7 +227,9 @@ export default function CanvasTopBar() {
             return (
               <button
                 key={view.id}
-                className="flex items-center gap-1.5 rounded-md px-3.5 py-1.5 text-xs font-medium transition"
+                aria-label={view.label}
+                title={view.label}
+                className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-medium transition xl:px-3.5"
                 style={{
                   background: active ? "white" : "transparent",
                   color: active ? "#172033" : "#667085",
@@ -234,7 +238,7 @@ export default function CanvasTopBar() {
                 onClick={() => navigateTo(view.id)}
               >
                 <Icon size={13} />
-                {view.label}
+                <span className="hidden xl:inline">{view.label}</span>
               </button>
             )
           })}
@@ -242,12 +246,14 @@ export default function CanvasTopBar() {
       </div>
 
       <div className="flex h-full items-center gap-2 border-l border-[#F2F4F7] px-3">
+        {["story-map", "gantt"].includes(workspace.currentPage) && <ReleaseFilter />}
         <div className="flex items-center rounded-lg border border-[#E2E7EE] px-2">
           <CalendarRange size={13} className="text-[#667085]" />
           <select
+            aria-label="当前 Sprint"
             value={workspace.selectedSprintId}
             onChange={(event) => selectSprint(event.target.value)}
-            className="h-8 cursor-pointer bg-transparent px-1.5 text-xs font-medium text-[#344054] outline-none"
+            className="h-8 max-w-40 cursor-pointer bg-transparent px-1.5 text-xs font-medium text-[#344054] outline-none xl:max-w-56"
           >
             {Object.values(sprints).map((sprint) => (
               <option key={sprint.id} value={sprint.id}>
@@ -390,7 +396,7 @@ export default function CanvasTopBar() {
               <button
                 className="menu-row text-[#B42318]"
                 onClick={() => {
-                  if (window.confirm("确定重置为课程演示数据吗？")) {
+                  if (window.confirm("确定替换为完整示例项目吗？包含 Release、Sprint、任务、验收与燃尽历史。当前数据会被替换。")) {
                     resetDemoData()
                     setMenu(null)
                     notify("演示数据已重置")

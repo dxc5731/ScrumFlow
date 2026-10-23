@@ -72,7 +72,7 @@ export default function ScrumBoard() {
       <div className="flex h-11 items-center gap-3 border-b border-[#E2E7EE] bg-white px-4">
         <span className="text-xs font-semibold text-[#344054]">执行状态</span>
         <span className="rounded bg-[#F2F4F7] px-2 py-0.5 text-[10px] text-[#667085]">
-          Task 与 Subtask 共用 Project Model
+          Release：{state.releases[state.sprints[state.workspace.selectedSprintId]?.releaseId ?? ""]?.name ?? "未分配"}
         </span>
         <div className="ml-auto flex items-center gap-1">
           <Users size={13} className="text-[#98A2B3]" />

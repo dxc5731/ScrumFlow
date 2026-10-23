@@ -5,7 +5,7 @@ import {
   Activity, ArrowRight, Bot, CalendarDays, Check, CheckCircle2, ChevronDown,
   PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen,
   ClipboardList, Clock3, FileStack, Flag, GitBranch, ListTree, MessageCircle,
-  Mic, MicOff, MoreHorizontal, Pin, PinOff, Send, ShieldAlert, Sparkles, Square, Users, WandSparkles, X,
+  Maximize2, Minimize2, Minus, Mic, MicOff, MoreHorizontal, Pin, PinOff, Send, ShieldAlert, Sparkles, Square, Users, WandSparkles, X,
 } from "lucide-react"
 import {
   agentName, meetingAgents, parseAgentMention,
@@ -133,10 +133,11 @@ function HostChoices({ message, state, disabled, onChoose }: { message: MeetingM
   </div>
 }
 
-function MessageRow({ message, state, onViewProposal, onReanalyze, onHostChoice, readOnly = false }: {
+function MessageRow({ message, state, onViewProposal, onViewMaterials, onReanalyze, onHostChoice, readOnly = false }: {
   message: MeetingMessage
   state: ProjectDataState
   onViewProposal: (id: string) => void
+  onViewMaterials?: () => void
   onReanalyze?: (message: MeetingMessage) => void
   onHostChoice?: (message: MeetingMessage, choice: MeetingHostChoice, taskId?: string) => void
   readOnly?: boolean
@@ -159,7 +160,7 @@ function MessageRow({ message, state, onViewProposal, onReanalyze, onHostChoice,
        {message.hostEvent && <HostChoices message={message} state={state} disabled={readOnly || !onHostChoice} onChoose={(choice, taskId) => onHostChoice?.(message, choice, taskId)} />}
        {message.handoffTo && <div className="meeting-handoff" role="status"><AgentAvatar id={message.senderId} size={25} /><strong>{agentName(message.senderId)}</strong><ArrowRight size={17} /><AgentAvatar id={message.handoffTo} size={25} /><strong>{agentName(message.handoffTo)} Agent</strong><span>已邀请协作</span></div>}
        {!human && (presentation.details || evidence.length > 0) && <details className="meeting-evidence"><summary>{presentation.details ? "展开详情" : "查看依据"} <ChevronDown size={13} /></summary>{presentation.details && <ReplyBody content={presentation.details} />}{evidence.length > 0 && <ul>{evidence.map((item,index) => <li key={index}>{item}</li>)}</ul>}</details>}
-       {message.artifactIds?.length ? <MeetingMaterials ids={message.artifactIds} state={state} compact /> : null}
+       {message.artifactIds?.length ? onViewMaterials ? <button type="button" className="meeting-message-reanalyze" onClick={onViewMaterials}>打开会议材料 <ArrowRight size={12} /></button> : <MeetingMaterials ids={message.artifactIds} state={state} compact /> : null}
        {message.signal === "reanalyze" && onReanalyze && <button className="meeting-message-reanalyze" type="button" onClick={() => onReanalyze(message)}>重新分析 <ArrowRight size={12} /></button>}
       {proposal && <div className="meeting-proposal-note">
          <div><WandSparkles size={15} /><strong>{describeBusinessChanges(businessChangeSummary(proposal.actions))}</strong></div>
@@ -372,8 +373,12 @@ function PanelResizeHandle({ side, width, max, onResize, onDragging }: {
     onKeyDown={event => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); resize(width + (event.key === "ArrowRight" ? 24 : -24) * direction) } else if (event.key === "Home") { event.preventDefault(); resize(min) } else if (event.key === "End") { event.preventDefault(); resize(max) } }} />
 }
 
-export default function MeetingRoom({ initialSessionId, onClose, initialHistoryOpen = false, initialView = "live", announceWelcome = false }: {
+export type MeetingRoomSection = "chat" | "decisions" | "minutes" | "materials" | "history"
+
+export default function MeetingRoom({ initialSessionId, onClose, initialHistoryOpen = false, initialView = "live", announceWelcome = false, presentation = "full", onTogglePresentation, onMinimize, hidden = false, floatingStyle, viewRequest, modelNotice, onWorkingChange, onSessionChange }: {
   initialSessionId: string; onClose: () => void; initialHistoryOpen?: boolean; initialView?: "live" | "history"; announceWelcome?: boolean
+  presentation?: "full" | "compact"; onTogglePresentation?: () => void; onMinimize?: () => void; hidden?: boolean
+  floatingStyle?: React.CSSProperties; viewRequest?: { section: MeetingRoomSection; nonce: number }; modelNotice?: string; onWorkingChange?: (working: boolean) => void; onSessionChange?: (id: string) => void
 }) {
   const liveState = useProjectStore()
   const [sessionId, setSessionId] = useState(initialSessionId)
@@ -386,6 +391,7 @@ export default function MeetingRoom({ initialSessionId, onClose, initialHistoryO
   const [clockNow, setClockNow] = useState(Date.now)
   const outputSpeaking = useRef<() => boolean>(() => false)
   const [draft, setDraft] = useState("")
+  const [quickAgent, setQuickAgent] = useState<MeetingAgentId>("auto")
   const [cursor, setCursor] = useState(0)
   const [pickerDismissed, setPickerDismissed] = useState(false)
   const [retryText, setRetryText] = useState("")
@@ -429,7 +435,7 @@ export default function MeetingRoom({ initialSessionId, onClose, initialHistoryO
   const generatedKeys = session ? generatedRecommendationKeys(state, session) : new Set<string>()
   const remainingMaterials = materialSuggestions.filter(item => !generatedKeys.has(item.key)).length
   const materialCount = new Set(Object.values(state.assets).filter(asset => meetingArtifactMetadata(asset)?.id === sessionId).map(materialFamilyId)).size
-  const openMaterials = () => { setShowMaterials(true); setShowMinutes(false); setClosing(false) }
+  const openMaterials = () => { if (presentation === "compact") onTogglePresentation?.(); setShowMaterials(true); setShowMinutes(false); setClosing(false) }
   const token = composerTokenAt(draft, cursor)
   const mentionFragment = token?.kind === "agent" ? token.fragment : ""
   const entityFragment = token?.kind === "entity" ? token.fragment : ""
@@ -441,6 +447,22 @@ export default function MeetingRoom({ initialSessionId, onClose, initialHistoryO
   ] : []
   const entityOptions = entityPickerOpen ? meetingEntities(state).filter((item) => `${item.id} ${item.label}`.toLowerCase().includes(entityFragment.toLowerCase())).slice(0, 12) : []
 
+  useEffect(() => {
+    if (presentation !== "compact") return
+    setShowMinutes(false); setShowMaterials(false); setShowHistory(false); setShowTechnicalMenu(false); setClosing(false); setActiveTab("chat")
+  }, [presentation])
+  useEffect(() => { onSessionChange?.(sessionId) }, [sessionId, onSessionChange])
+  useEffect(() => { onWorkingChange?.(working) }, [working, onWorkingChange])
+  useEffect(() => {
+    if (!viewRequest) return
+    setShowMinutes(viewRequest.section === "minutes")
+    setShowMaterials(viewRequest.section === "materials")
+    setShowHistory(viewRequest.section === "history")
+    setViewMode(viewRequest.section === "history" ? "history" : "live")
+    setActiveTab(viewRequest.section === "decisions" ? "decisions" : "chat")
+    if (viewRequest.section === "decisions") setRightOpen(true)
+    setClosing(false)
+  }, [viewRequest?.nonce])
   useEffect(() => {
     try { localStorage.setItem(panelSizeKey, JSON.stringify(panelWidths)) } catch { /* Layout remains usable without saved preferences. */ }
   }, [panelWidths])
@@ -465,16 +487,16 @@ export default function MeetingRoom({ initialSessionId, onClose, initialHistoryO
   // 语音转写：每句识别结果直接记为当前发言人的会议发言，不触发 AI 助手回复，结束会议时统一总结
   const speech = useSpeechTranscription((text) => {
     const current = useProjectStore.getState()
-    if (outputSpeaking.current() || !canInteract || closing || showMinutes || showMaterials || current.meetingSessions[sessionId]?.status !== "active") return
+    if (hidden || outputSpeaking.current() || !canInteract || closing || showMinutes || showMaterials || current.meetingSessions[sessionId]?.status !== "active") return
     try { current.addMeetingMessage(sessionId, { senderType: "user", senderId: speakerId, content: text, inputSource: "voice" }) }
     catch (cause) { setError(cause instanceof Error ? cause.message : "语音记录失败") }
   })
   const { listening, cancel: cancelListening } = speech
-  useEffect(() => () => cancelListening(), [sessionId, speakerId, canInteract, closing, showMinutes, showMaterials, cancelListening])
+  useEffect(() => () => cancelListening(), [sessionId, speakerId, canInteract, closing, showMinutes, showMaterials, hidden, cancelListening])
   const hostSpeech = useMeetingHostSpeech({ sessionId, message: messages.filter(message => message.hostEvent).at(-1),
-    enabled: session?.facilitation?.voiceEnabled ?? false, active: canInteract, recording: listening, announceWelcome })
+    enabled: session?.facilitation?.voiceEnabled ?? false, active: canInteract && !hidden, recording: listening, announceWelcome })
   outputSpeaking.current = hostSpeech.isSpeaking
-  const reviewingTopic = useMeetingManagement(sessionId, canInteract && !closing && !listening && !working && !draft.trim() && !showMinutes && !showMaterials)
+  const reviewingTopic = useMeetingManagement(sessionId, canInteract && !hidden && !closing && !listening && !working && !draft.trim() && !showMinutes && !showMaterials)
   useEffect(() => {
     if (!session?.facilitation || session.status !== "active") return
     const tick = () => setClockNow(Date.now())
@@ -539,7 +561,12 @@ export default function MeetingRoom({ initialSessionId, onClose, initialHistoryO
   }
 
   const send = async (override?: string) => {
-    const text = (override ?? draft).trim()
+    const entered = (override ?? draft).trim()
+    if (!entered) return
+    const selectedAgent = meetingAgents.find(agent => agent.id === quickAgent)
+    const explicit = parseAgentMention(entered, useProjectStore.getState())
+    const text = (presentation === "compact" || onTogglePresentation) && quickAgent !== "auto" && selectedAgent && explicit.agentId === "auto" && !explicit.memberId && !/[@＠]/.test(entered)
+      ? `@${selectedAgent.handle} ${entered}` : entered
     if (!text || sendingRef.current || working || !canInteract) return
     const current = useProjectStore.getState()
     const { agentId, question, memberId } = parseAgentMention(text, current)
@@ -624,6 +651,7 @@ export default function MeetingRoom({ initialSessionId, onClose, initialHistoryO
   }
 
   const openProposal = (id: string) => {
+    if (presentation === "compact") onTogglePresentation?.()
     setFocusedProposalId(id)
     setRightOpen(true)
     setShowMaterials(false); setShowMinutes(false)
@@ -658,7 +686,7 @@ export default function MeetingRoom({ initialSessionId, onClose, initialHistoryO
   const rightWidth = rightOpen ? Math.max(240, Math.min(wantedRight, available - leftWidth)) : 38
   const resizePanel = (side: "left" | "right", width: number) => setPanelWidths(previous => ({ ...previous, [side]: width }))
 
-  const roomActions = <div className="meeting-header-actions">{!session.facilitation && <span className={`meeting-live ${!canInteract ? "meeting-live--ended" : ""}`}><i />{session.status === "ended" ? "会议已结束" : viewMode === "history" ? "历史记录 · 未结束" : closing ? "结束前确认" : "会议进行中"}</span>}<div ref={historyRef} className="meeting-history-wrap"><button type="button" title="历史会议" aria-label="历史会议" disabled={working} aria-expanded={showHistory} onClick={() => { setShowHistory(!showHistory); setShowTechnicalMenu(false) }}><Clock3 size={16} />{!session.facilitation && "历史会议"}</button>{showHistory && <div className="meeting-history-menu"><h3>历史会议</h3><p className="meeting-pin-help">置顶优先 · 最近置顶在前 · 其余按创建时间</p>{history.map(item => {
+  const roomActions = <div className="meeting-header-actions">{onTogglePresentation && <button type="button" aria-label={presentation === "compact" ? "展开完整会议室" : "切换为小窗"} title={presentation === "compact" ? "展开完整会议室" : "切换为小窗"} onClick={onTogglePresentation}>{presentation === "compact" ? <Maximize2 size={16}/> : <Minimize2 size={16}/>}</button>}{onMinimize && <button type="button" aria-label="最小化 AI 聊天" title="最小化 AI 聊天" onClick={onMinimize}><Minus size={16}/></button>}{!session.facilitation && <span className={`meeting-live ${!canInteract ? "meeting-live--ended" : ""}`}><i />{session.status === "ended" ? "会议已结束" : viewMode === "history" ? "历史记录 · 未结束" : closing ? "结束前确认" : "会议进行中"}</span>}<div ref={historyRef} className="meeting-history-wrap"><button type="button" title="历史会议" aria-label="历史会议" disabled={working} aria-expanded={showHistory} onClick={() => { setShowHistory(!showHistory); setShowTechnicalMenu(false) }}><Clock3 size={16} />{!session.facilitation && "历史会议"}</button>{showHistory && <div className="meeting-history-menu"><h3>历史会议</h3><p className="meeting-pin-help">置顶优先 · 最近置顶在前 · 其余按创建时间</p>{history.map(item => {
           const scope = state.sprints[item.memory?.focusSprintId ?? state.stories[item.targetId]?.sprintId ?? ""]?.name ?? "项目会议"
           return <div key={item.id} className={`meeting-history-entry ${item.pinnedAt ? "is-pinned" : ""}`}><button type="button" disabled={working} onClick={() => { setSessionId(item.id); setViewMode("history"); setClosing(false); setDraft(""); setError(""); setRetryText(""); setPickerDismissed(true); setShowTechnicalMenu(false); setDetailOpen(false); setFocusedProposalId(null); setShowHistory(false); setShowMaterials(false); setShowMinutes(false); setActiveTab("chat") }}><strong>{item.pinnedAt && <Pin size={12} />} {item.title.replace(/Showcase\s*V?\d*|示范讨论|测试会议|Demo/gi, "项目协作会议")}</strong><span>{new Date(item.createdAt).toLocaleString("zh-CN")} · {scope} · {item.demo ? "沙盒演示" : item.status === "ended" ? "已结束" : "未结束"}</span><p>{(item.narrative?.text ?? "").slice(0, 70) || `${item.topics?.length ?? 0} 个议题 · ${item.messageIds.length} 条讨论`}</p></button><button type="button" className="meeting-pin-toggle" aria-label={`${item.pinnedAt ? "取消置顶" : "置顶"}：${item.title}`} title={item.pinnedAt ? "取消置顶" : "置顶会议"} aria-pressed={Boolean(item.pinnedAt)} onClick={() => liveState.setMeetingPresentation(item.id, { pinnedAt: item.pinnedAt ? null : new Date().toISOString() })}>{item.pinnedAt ? <PinOff size={15} /> : <Pin size={15} />}</button></div>
         })}</div>}</div><div ref={technicalRef} className="meeting-history-wrap meeting-technical-wrap"><button type="button" title="更多" aria-label="更多会议操作" aria-expanded={showTechnicalMenu} onClick={() => { setShowTechnicalMenu(!showTechnicalMenu); setShowHistory(false) }}><MoreHorizontal size={17} /></button>{showTechnicalMenu && <div className="meeting-history-menu meeting-technical-menu">
@@ -667,25 +695,28 @@ export default function MeetingRoom({ initialSessionId, onClose, initialHistoryO
           {canInteract && !closing && session.facilitation && <label className="meeting-menu-extension">延长会议<select aria-label="延长会议" value="" disabled={working} onChange={event => { const value = Number(event.target.value); if (value === 5 || value === 10) { state.extendMeetingTime(sessionId, value); setShowTechnicalMenu(false) } }}><option value="">选择时长</option><option value="5">延长 5 分钟</option><option value="10">延长 10 分钟</option></select></label>}
           {canInteract && session.presentationMode !== "defense" && <button type="button" onClick={() => { state.setMeetingPresentation(sessionId, { presentationMode: "defense" }); setShowTechnicalMenu(false) }}>开启答辩彩排</button>}{detailSession && <button type="button" onClick={() => { setDetailProposalId(focusedProposalId); setDetailOpen(true); setShowTechnicalMenu(false) }}>Agent 技术详情</button>}</div>}</div>{viewMode === "history" && session.status === "active" && <button type="button" title="继续会议" onClick={() => { setViewMode("live"); setClosing(false); setShowMinutes(false); setShowMaterials(false); setActiveTab("chat") }}>继续会议 <ArrowRight size={14} /></button>}{canInteract && !closing && <button type="button" title="结束会议" disabled={working} onClick={() => { cancelListening(); state.dispatchMeetingHostEvent(sessionId, "closing"); setClosing(true); setShowMaterials(false); setShowMinutes(true) }}><Square size={14} /> 结束会议</button>}<button className="meeting-header-close" aria-label="关闭会议室" type="button" title="关闭会议室" disabled={working} onClick={() => { hostSpeech.cancel(); cancelListening(); onClose() }}><X size={18} /></button></div>
 
-   return <div className="meeting-room" role="dialog" aria-modal="true" aria-label="AI 项目会议室">
-    {session.facilitation ? <MeetingHostControls session={session} now={clockNow} interactive={canInteract} closing={closing} busy={working} speaking={hostSpeech.speaking} voiceSupported={hostSpeech.supported} voiceError={hostSpeech.error} reviewing={reviewingTopic} actions={roomActions} /> : <header className="meeting-header"><div className="meeting-header-title"><span className="meeting-header-symbol"><Sparkles size={18} /></span><div><h1>{session.title}</h1><p>{story?.title ?? sprint?.name ?? state.project.name}</p></div></div>{roomActions}</header>}
-     <nav className="meeting-detail-tabs" aria-label="会议详情">{[["chat", "会议对话"], ["minutes", "会议纪要"], ["materials", "会议材料"]].map(([id,label]) => <button type="button" key={id} aria-label={label} disabled={working} aria-current={(id === "minutes" ? showMinutes : id === "materials" ? showMaterials : !showMinutes && !showMaterials) ? "page" : undefined} onClick={() => { setShowMinutes(id === "minutes"); setShowMaterials(id === "materials"); setClosing(false); setShowTechnicalMenu(false) }}>{label}{id === "materials" && <small className="meeting-material-tab-count" aria-live="polite">{materialBusy || busyAgent === "material_organizer" ? " · 正在生成" : materialCount ? ` · ${materialCount} 份` : canPrepareMaterials && remainingMaterials ? ` · ${remainingMaterials} 项建议` : ""}{canInteract && materialMoment?.expanded && remainingMaterials > 0 && !showMaterials && <i aria-label="有新建议" />}</small>}</button>)}</nav>
+   return <div className={"meeting-room" + (presentation === "compact" ? " meeting-room--compact" : "")} style={{ ...(presentation === "compact" ? floatingStyle : {}), ...(hidden ? { display: "none" } : {}) }} role="dialog" aria-modal={presentation === "full"} aria-label={presentation === "compact" ? "AI 快捷聊天" : "AI 项目会议室"}>
+    {session.facilitation ? <MeetingHostControls session={session} now={clockNow} interactive={canInteract} closing={closing} busy={working} speaking={hostSpeech.speaking} voiceSupported={hostSpeech.supported} voiceError={hostSpeech.error} reviewing={reviewingTopic} actions={roomActions} /> : <header className="meeting-header"><div className="meeting-header-title"><span className="meeting-header-symbol"><Sparkles size={18} /></span><div><h1>{presentation === "compact" ? "AI 快捷聊天" : session.title}</h1><p>{story?.title ?? sprint?.name ?? state.project.name}</p></div></div>{roomActions}</header>}
+     {presentation !== "compact" && <nav className="meeting-detail-tabs" aria-label="会议详情">{[["chat", "会议对话"], ["minutes", "会议纪要"], ["materials", "会议材料"]].map(([id,label]) => <button type="button" key={id} aria-label={label} disabled={working} aria-current={(id === "minutes" ? showMinutes : id === "materials" ? showMaterials : !showMinutes && !showMaterials) ? "page" : undefined} onClick={() => { setShowMinutes(id === "minutes"); setShowMaterials(id === "materials"); setClosing(false); setShowTechnicalMenu(false) }}>{label}{id === "materials" && <small className="meeting-material-tab-count" aria-live="polite">{materialBusy || busyAgent === "material_organizer" ? " · 正在生成" : materialCount ? ` · ${materialCount} 份` : canPrepareMaterials && remainingMaterials ? ` · ${remainingMaterials} 项建议` : ""}{canInteract && materialMoment?.expanded && remainingMaterials > 0 && !showMaterials && <i aria-label="有新建议" />}</small>}</button>)}</nav>}
      {session.demo && <div className="meeting-demo-guide"><div><span><ShieldAlert size={14} />独立沙盒 · 离线演示</span><p>发言与主持事件为预设记录；分析、审批执行及文件由现有程序产生。写回仅在沙盒，正式项目保持隔离。</p></div><nav aria-label="演示关键节点">{[["开场", "welcome"], ["发现风险", "sprint_blocker"], ["语义纠偏", "topic_deviation"], ["审核执行", "execution"], ["会议收尾", "closing"]].map(([label, kind]) => <button type="button" key={kind} onClick={() => { const message = messages.find(m => kind === "execution" ? !!m.proposalId : m.hostEvent?.kind === kind); setShowMinutes(false); setShowMaterials(false); setActiveTab("chat"); following.current = false; window.setTimeout(() => document.getElementById(`meeting-message-${message?.id}`)?.scrollIntoView({ block: "start", behavior: "smooth" }), 60) }}>{label}</button>)}</nav>{session.demo.materialStatus !== "ready" && <small role="status">{session.demo.materialStatus === "error" ? <>{session.demo.materialError}<button type="button" onClick={() => void ensureClassroomDemo()}>重试本地材料</button></> : "正在准备本地成果文件…"}</small>}</div>}
+     {session.demo?.source === "reference-snapshot" && <p className="meeting-quick-notice">本场使用课堂会议独立示例快照；任务、成员和分析不代表当前项目，所有执行均保留在沙盒。</p>}
+     {presentation === "compact" && modelNotice && <p className="meeting-quick-notice" role="status">{modelNotice}</p>}
+     {(presentation === "compact" || onTogglePresentation) && canInteract && !showMinutes && !showMaterials && activeTab === "chat" && <div className="meeting-quick-agent"><label htmlFor={"quick-agent-"+sessionId}>对话助手</label><select id={"quick-agent-"+sessionId} aria-label="快捷聊天 Agent" value={quickAgent} disabled={working} onChange={event=>setQuickAgent(event.target.value as MeetingAgentId)}>{meetingAgents.map(agent=><option key={agent.id} value={agent.id}>{agent.name}</option>)}</select><span>也可 @成员 或 #引用工作</span></div>}
      {!canInteract && error && <div className="meeting-compose-error" role="alert">{error}<button type="button" title="关闭提示" onClick={() => setError("")}><X size={13} /></button></div>}
-     {!showMinutes && !showMaterials && <nav className="meeting-mobile-tabs" aria-label="会议页面">{([ ["chat", "讨论"], ["context", "项目背景"], ["decisions", "待确认"] ] as const).map(([id, label]) => <button key={id} className={activeTab === id ? "is-active" : ""} onClick={() => { setActiveTab(id); if (id === "context") setLeftOpen(true); if (id === "decisions") setRightOpen(true) }}>{label}</button>)}</nav>}
-     {showMaterials ? <main className="meeting-materials-page"><h2>会议材料</h2><p>这场会议的成果统一归档在这里，默认展示最新版本。</p>{canPrepareMaterials && <MaterialSuggestions state={state} sessionId={sessionId} showAssets={false} onBusyChange={setMaterialBusy} />}{readableMeeting(state, session).assetIds.length ? <MeetingMaterials ids={readableMeeting(state, session).assetIds} state={state} /> : <p>{canInteract ? "尚未生成材料。可以在会议对话中邀请材料整理。" : "这场会议尚未生成材料。"}</p>}</main> : showMinutes ? <MeetingMinutesView key={sessionId} state={state} sessionId={sessionId} busy={Boolean(busyAgent)} readOnly={!canInteract} allowMaterials={canPrepareMaterials} closing={closing} onBusyChange={setMaterialBusy} onBack={() => { setShowMinutes(false); setClosing(false) }} onReview={() => { setClosing(false); setShowMinutes(false); setRightOpen(true); setActiveTab("decisions") }} onEnd={finishMeeting} onMaterials={openMaterials} onProposal={openProposal} onLocate={id => { setShowMinutes(false); setShowMaterials(false); setActiveTab("chat"); window.setTimeout(() => document.getElementById(`meeting-message-${id}`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 50) }} /> : <div ref={layoutRef} style={{ gridTemplateColumns: leftWidth + "px " + (leftOpen ? 8 : 0) + "px minmax(0, 1fr) " + (rightOpen ? 8 : 0) + "px " + rightWidth + "px" }} className={"meeting-layout" + (resizing ? " meeting-layout--resizing" : "")}>
+     {presentation !== "compact" && !showMinutes && !showMaterials && <nav className="meeting-mobile-tabs" aria-label="会议页面">{([ ["chat", "讨论"], ["context", "项目背景"], ["decisions", "待确认"] ] as const).map(([id, label]) => <button key={id} className={activeTab === id ? "is-active" : ""} onClick={() => { setActiveTab(id); if (id === "context") setLeftOpen(true); if (id === "decisions") setRightOpen(true) }}>{label}</button>)}</nav>}
+     {presentation !== "compact" && showMaterials ? <main className="meeting-materials-page"><h2>会议材料</h2><p>这场会议的成果统一归档在这里，默认展示最新版本。</p>{canPrepareMaterials && <MaterialSuggestions state={state} sessionId={sessionId} showAssets={false} onBusyChange={setMaterialBusy} />}{readableMeeting(state, session).assetIds.length ? <MeetingMaterials ids={readableMeeting(state, session).assetIds} state={state} /> : <p>{canInteract ? "尚未生成材料。可以在会议对话中邀请材料整理。" : "这场会议尚未生成材料。"}</p>}</main> : presentation !== "compact" && showMinutes ? <MeetingMinutesView key={sessionId} state={state} sessionId={sessionId} busy={Boolean(busyAgent)} readOnly={!canInteract} allowMaterials={canPrepareMaterials} closing={closing} onBusyChange={setMaterialBusy} onBack={() => { setShowMinutes(false); setClosing(false) }} onReview={() => { setClosing(false); setShowMinutes(false); setRightOpen(true); setActiveTab("decisions") }} onEnd={finishMeeting} onMaterials={openMaterials} onProposal={openProposal} onLocate={id => { setShowMinutes(false); setShowMaterials(false); setActiveTab("chat"); window.setTimeout(() => document.getElementById(`meeting-message-${id}`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 50) }} /> : <div ref={layoutRef} style={{ gridTemplateColumns: leftWidth + "px " + (leftOpen ? 8 : 0) + "px minmax(0, 1fr) " + (rightOpen ? 8 : 0) + "px " + rightWidth + "px" }} className={"meeting-layout" + (resizing ? " meeting-layout--resizing" : "")}>
        <div className={`meeting-pane meeting-pane--context ${activeTab === "context" ? "is-visible" : ""}`}>{leftOpen ? <ContextPanel state={state} sessionId={sessionId} onToggle={() => setLeftOpen(false)} /> : <button type="button" className="meeting-side-rail" title="展开会议背景" aria-label="展开会议背景" onClick={() => setLeftOpen(true)}><PanelLeftOpen size={16} /></button>}</div>
       {leftOpen && <PanelResizeHandle side="left" width={leftWidth} max={Math.max(200, Math.min(440, layoutWidth - rightWidth - 416))} onResize={width => resizePanel("left", width)} onDragging={setResizing} />}
       <main className={`meeting-pane meeting-pane--chat ${activeTab === "chat" ? "is-visible" : ""}`}>
          <div className="meeting-chat-heading"><div><h2>会议讨论</h2></div><span><MessageCircle size={14} /> {messages.length} 条消息</span></div>
-         <div className="meeting-timeline" ref={timelineRef} tabIndex={0} aria-label="会议消息滚动区域" onScroll={event => { const el = event.currentTarget; const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 90; following.current = bottom; setAtBottom(bottom); if (bottom) setNewMessages(0) }}>{messages.map((message) => <Fragment key={message.id}><MessageRow message={message} state={state} readOnly={!canInteract || working} onViewProposal={openProposal} onHostChoice={(source, choice, taskId) => {
+         <div className="meeting-timeline" ref={timelineRef} tabIndex={0} aria-label="会议消息滚动区域" onScroll={event => { const el = event.currentTarget; const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 90; following.current = bottom; setAtBottom(bottom); if (bottom) setNewMessages(0) }}>{messages.map((message) => <Fragment key={message.id}><MessageRow message={message} state={state} readOnly={!canInteract || working} onViewProposal={openProposal} onViewMaterials={presentation === "compact" ? openMaterials : undefined} onHostChoice={(source, choice, taskId) => {
            const result = useProjectStore.getState().respondMeetingHostEvent(sessionId, source.id, choice, taskId)
            if (!result.ok) setError(result.message)
            if (result.proposalId) openProposal(result.proposalId)
          }} onReanalyze={canInteract ? (source) => {
            const task = Object.values(state.tasks).find((item) => source.content.includes(item.title))
            void send(`@风险与依赖 如果${task ? ` #${task.id.toUpperCase()}` : "当前任务"}晚一天，会影响哪些后续工作？`)
-         } : undefined} />{canInteract && materialMoment?.messageId === message.id && (materialMoment.expanded && !busyAgent || materialBusy ? <MaterialSuggestions key={message.id} state={state} sessionId={sessionId} showAssets={false} focusKeys={materialMoment.keys} reason={materialMoment.reason} onMaterials={openMaterials} onBusyChange={setMaterialBusy} /> : <div className="meeting-material-reminder"><Sparkles size={14} /><span>这段讨论的成果建议已保留</span><button type="button" disabled={working} onClick={openMaterials}>查看建议 →</button></div>)}</Fragment>)}
+         } : undefined} />{canInteract && materialMoment?.messageId === message.id && (presentation !== "compact" && (materialMoment.expanded && !busyAgent || materialBusy) ? <MaterialSuggestions key={message.id} state={state} sessionId={sessionId} showAssets={false} focusKeys={materialMoment.keys} reason={materialMoment.reason} onMaterials={openMaterials} onBusyChange={setMaterialBusy} /> : <div className="meeting-material-reminder"><Sparkles size={14} /><span>这段讨论的成果建议已保留</span><button type="button" disabled={working} onClick={openMaterials}>查看建议 →</button></div>)}</Fragment>)}
           {busyAgent && <div className="meeting-typing" role="status">{busyMemberId ? <MemberAvatar memberId={busyMemberId} size={28} /> : <AgentAvatar id={busyAgent} size={28} />}<span><strong>{busyMemberId ? state.members[busyMemberId]?.name : agentName(busyAgent)}</strong>{busyAgent === "material_organizer" ? "正在整理成果，新图形设计可能需要稍等一会儿" : "正在结合项目记录思考回复"}<span className="meeting-typing-dots">...</span></span></div>}
           <div ref={timelineEnd} />
         </div>

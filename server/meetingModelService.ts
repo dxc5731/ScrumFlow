@@ -1,5 +1,4 @@
 import { readFile } from "node:fs/promises"
-import os from "node:os"
 import path from "node:path"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import { routeMeetingModel, type MeetingModelMode } from "./meetingModelRouting.ts"
@@ -7,7 +6,6 @@ import { readMeetingUsage, recordProviderUsage, type ProviderUsage } from "./mee
 
 type Next = (error?: unknown) => void
 type Mode = MeetingModelMode
-const serviceEnvPath = path.join(os.homedir(), "Desktop", "正式模块四", "SunnyMind", "module4-service", ".env")
 
 function parseEnv(content: string): Record<string, string> {
   return Object.fromEntries(content.split(/\r?\n/).filter(line => /^[A-Za-z_][A-Za-z0-9_]*=/.test(line)).map(line => {
@@ -17,7 +15,8 @@ function parseEnv(content: string): Record<string, string> {
 }
 
 export async function meetingModelConfiguration() {
-  const files = await Promise.all([serviceEnvPath, path.resolve(".env"), path.resolve(".env.local"), process.env.SUNNYMIND_ENV_FILE]
+  const externalEnvFile = process.env.SCRUMFLOW_ENV_FILE || process.env.SUNNYMIND_ENV_FILE
+  const files = await Promise.all([externalEnvFile, path.resolve(".env"), path.resolve(".env.local")]
     .filter((file): file is string => Boolean(file)).map(file => readFile(file, "utf8").catch(() => "")))
   const env = { ...Object.assign({}, ...files.map(parseEnv)), ...process.env }
   const fastModel = env.MEETING_LLM_FAST_MODEL || env.MEETING_LLM_MODEL || "deepseek-flash"

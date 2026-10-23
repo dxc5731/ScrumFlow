@@ -72,35 +72,60 @@ describe("course-stage project data chain", () => {
     const store = useProjectStore.getState();
     const activityA = store.createActivity({ title: "课程分析", domain: "planning" });
     const activityB = store.createActivity({ title: "课程交付", domain: "delivery" });
-    const userTaskA = store.createUserTask(activityA.id, { title: "整理场景" });
-    const userTaskB = store.createUserTask(activityB.id, { title: "验证成果" });
-    const epic = store.createEpic(userTaskA.id, { title: "场景建模" });
+    const epic = store.createEpic(activityA.id, { title: "场景建模" });
 
     expect(store.updateActivity(activityA.id, { title: "需求分析", domain: "design" }).ok).toBe(true);
-    expect(store.updateUserTask(userTaskA.id, { title: "梳理场景", activityId: activityB.id }).ok).toBe(true);
-    expect(store.updateEpic(epic.id, { title: "成果建模", userTaskId: userTaskB.id }).ok).toBe(true);
+    expect(store.updateEpic(epic.id, { title: "成果建模", goalId: activityB.id }).ok).toBe(true);
 
     let state = useProjectStore.getState();
     expect(state.activities[activityA.id]).toMatchObject({ title: "需求分析", domain: "design" });
-    expect(state.userTasks[userTaskA.id]).toMatchObject({ title: "梳理场景", activityId: activityB.id });
-    expect(state.epics[epic.id]).toMatchObject({ title: "成果建模", userTaskId: userTaskB.id });
+    expect(state.epics[epic.id]).toMatchObject({ title: "成果建模", goalId: activityB.id });
 
     expect(state.deleteEpic(epic.id).ok).toBe(true);
     expect(useProjectStore.getState().epics[epic.id]).toBeUndefined();
-    expect(useProjectStore.getState().deleteUserTask(userTaskA.id).ok).toBe(true);
-    expect(useProjectStore.getState().userTasks[userTaskA.id]).toBeUndefined();
     expect(useProjectStore.getState().deleteActivity(activityA.id).ok).toBe(true);
     state = useProjectStore.getState();
     expect(state.activities[activityA.id]).toBeUndefined();
     expect(state.activities[activityB.id]).toBeDefined();
   });
 
+  it("migrates legacy intermediate parents without changing story or task identities", () => {
+    const store = useProjectStore.getState();
+    const legacy = JSON.parse(store.exportProjectJson());
+    legacy.schemaVersion = 16;
+    const goalId = legacy.epics.ep5.goalId;
+    legacy.userTasks = { oldParent: { id: "oldParent", title: "旧中间层", activityId: goalId, order: 0 } };
+    legacy.epics.ep5.userTaskId = "oldParent";
+    delete legacy.epics.ep5.goalId;
+    const stories = Object.keys(legacy.stories);
+    const tasks = Object.keys(legacy.tasks);
+    expect(store.importProjectJson(JSON.stringify(legacy)).ok).toBe(true);
+    const migrated = useProjectStore.getState();
+    expect(migrated.epics.ep5.goalId).toBe(goalId);
+    expect(migrated.epics.ep5).not.toHaveProperty("userTaskId");
+    expect(migrated.userTasks).toEqual({});
+    expect(Object.keys(migrated.stories)).toEqual(stories);
+    expect(Object.keys(migrated.tasks)).toEqual(tasks);
+    expect(migrated.importProjectJson(migrated.exportProjectJson()).ok).toBe(true);
+    expect(useProjectStore.getState().epics.ep5.goalId).toBe(goalId);
+  });
+
+  it("moves an Epic directly into an empty goal and preserves its stories", () => {
+    const store = useProjectStore.getState();
+    const goal = store.createActivity({ title: "新目标" });
+    const childIds = Object.values(store.stories).filter(story => story.epicId === "ep5").map(story => story.id);
+    store.moveEpic("ep5", goal.id, 0);
+    expect(useProjectStore.getState().epics.ep5.goalId).toBe(goal.id);
+    expect(Object.values(useProjectStore.getState().stories).filter(story => story.epicId === "ep5").map(story => story.id)).toEqual(childIds);
+    expect(useProjectStore.getState().undoLastChange().ok).toBe(true);
+    expect(useProjectStore.getState().epics.ep5.goalId).toBe(store.epics.ep5.goalId);
+  });
+
   it("cascades hierarchy deletion through stories, execution data and references", () => {
     const store = useProjectStore.getState();
     const activity = store.createActivity({ title: "临时课程链路", domain: "quality" });
-    const userTask = store.createUserTask(activity.id, { title: "临时用户任务" });
-    const epic = store.createEpic(userTask.id, { title: "临时 Epic" });
-    const story = store.createStory({ title: "临时 Story", source: "manual", epicId: epic.id });
+    const epic = store.createEpic(activity.id, { title: "临时 Epic" });
+    const story = store.createStory({ releaseId: "release-demo", title: "临时 Story", source: "manual", epicId: epic.id });
     const task = store.createTask(story.id, { title: "临时工程任务" });
     const subtask = store.addSubtask(task.id, "临时 Subtask");
     const criterion = store.addAcceptanceCriterion(story.id, "临时验收标准");
@@ -133,7 +158,6 @@ describe("course-stage project data chain", () => {
     expect(store.deleteActivity(activity.id).ok).toBe(true);
     const after = useProjectStore.getState();
     expect(after.activities[activity.id]).toBeUndefined();
-    expect(after.userTasks[userTask.id]).toBeUndefined();
     expect(after.epics[epic.id]).toBeUndefined();
     expect(after.stories[story.id]).toBeUndefined();
     expect(after.tasks[task.id]).toBeUndefined();
@@ -193,8 +217,8 @@ describe("course-stage project data chain", () => {
 
   it("moves an Epic with every descendant and recursively clips descendants when shortened", () => {
     const store = useProjectStore.getState();
-    const epic = store.createEpic("t5", { title: "排期级联 Epic", startDate: "2026-09-01", endDate: "2026-09-30" });
-    const story = store.createStory({ title: "排期级联 Story", source: "manual", maturityStatus: "ready", sprintId: "s2", epicId: epic.id, startDate: "2026-09-05", dueDate: "2026-09-25" });
+    const epic = store.createEpic(store.epics.ep5.goalId, { title: "排期级联 Epic", startDate: "2026-09-01", endDate: "2026-09-30" });
+    const story = store.createStory({ releaseId: "release-demo", title: "排期级联 Story", source: "manual", maturityStatus: "ready", sprintId: "s2", epicId: epic.id, startDate: "2026-09-05", dueDate: "2026-09-25" });
     const task = store.createTask(story.id, { title: "排期级联 Task", startDate: "2026-09-07", endDate: "2026-09-20" });
     const subtask = store.addSubtask(task.id, "排期级联 Subtask");
     expect(store.updateSubtask(subtask.id, { startDate: "2026-09-09", endDate: "2026-09-18" }).ok).toBe(true);
@@ -223,8 +247,8 @@ describe("course-stage project data chain", () => {
 
   it("applies move and shrink rules at Story and Task levels", () => {
     const store = useProjectStore.getState();
-    const epic = store.createEpic("t5", { title: "多层排期 Epic", startDate: "2026-09-01", endDate: "2026-10-05" });
-    const story = store.createStory({ title: "多层排期 Story", source: "manual", maturityStatus: "ready", sprintId: "s2", epicId: epic.id, startDate: "2026-09-05", dueDate: "2026-09-25" });
+    const epic = store.createEpic(store.epics.ep5.goalId, { title: "多层排期 Epic", startDate: "2026-09-01", endDate: "2026-10-05" });
+    const story = store.createStory({ releaseId: "release-demo", title: "多层排期 Story", source: "manual", maturityStatus: "ready", sprintId: "s2", epicId: epic.id, startDate: "2026-09-05", dueDate: "2026-09-25" });
     const task = store.createTask(story.id, { title: "多层排期 Task", startDate: "2026-09-07", endDate: "2026-09-20" });
     const subtask = store.addSubtask(task.id, "多层排期 Subtask");
     expect(store.updateSubtask(subtask.id, { startDate: "2026-09-09", endDate: "2026-09-18" }).ok).toBe(true);
@@ -244,8 +268,8 @@ describe("course-stage project data chain", () => {
 
   it("expands every ancestor while previewing and committing a child schedule outside its parent", () => {
     const store = useProjectStore.getState();
-    const epic = store.createEpic("t5", { title: "Ancestor expansion Epic", startDate: "2026-09-01", endDate: "2026-09-30" });
-    const story = store.createStory({ title: "Ancestor expansion Story", source: "manual", maturityStatus: "ready", sprintId: "s2", epicId: epic.id, startDate: "2026-09-05", dueDate: "2026-09-25" });
+    const epic = store.createEpic(store.epics.ep5.goalId, { title: "Ancestor expansion Epic", startDate: "2026-09-01", endDate: "2026-09-30" });
+    const story = store.createStory({ releaseId: "release-demo", title: "Ancestor expansion Story", source: "manual", maturityStatus: "ready", sprintId: "s2", epicId: epic.id, startDate: "2026-09-05", dueDate: "2026-09-25" });
     const task = store.createTask(story.id, { title: "Ancestor expansion Task", startDate: "2026-09-07", endDate: "2026-09-20" });
     const subtask = store.addSubtask(task.id, "Ancestor expansion Subtask");
     expect(store.updateSubtask(subtask.id, { startDate: "2026-09-09", endDate: "2026-09-18" }).ok).toBe(true);
@@ -513,14 +537,14 @@ describe("course-stage project data chain", () => {
   it("starts a Sprint only after goal, dates, Story and assignee checks pass", () => {
     const store = useProjectStore.getState();
     expect(store.setSprintStatus("s2", "closed").ok).toBe(true);
-    const sprint = store.createSprint({
+    const sprint = store.createSprint({ releaseId: "release-demo",
       name: "课程验收 Sprint",
       goal: "走通 B2 和 B3 的完整链路",
       startDate: "2026-09-14",
       endDate: "2026-09-25",
       capacity: 13,
     });
-    const story = store.createStory({
+    const story = store.createStory({ releaseId: "release-demo",
       title: "Sprint 启动 Story",
       source: "manual",
       maturityStatus: "ready",
@@ -535,7 +559,7 @@ describe("course-stage project data chain", () => {
     expect(useProjectStore.getState().sprints[sprint.id].status).toBe("active");
     expect(useProjectStore.getState().workspace.selectedSprintId).toBe(sprint.id);
 
-    const another = useProjectStore.getState().createSprint({
+    const another = useProjectStore.getState().createSprint({ releaseId: "release-demo",
       name: "冲突 Sprint",
       goal: "验证唯一 active",
       startDate: "2026-09-15",
@@ -549,7 +573,7 @@ describe("course-stage project data chain", () => {
 
   it("uses Subtasks as execution leaves before moving a Story to pending acceptance", () => {
     const store = useProjectStore.getState();
-    const story = store.createStory({
+    const story = store.createStory({ releaseId: "release-demo",
       title: "叶节点验收 Story",
       source: "manual",
       maturityStatus: "ready",
@@ -572,7 +596,7 @@ describe("course-stage project data chain", () => {
 
   it("accepts, returns and re-accepts a Story while preserving append-only logs", () => {
     const store = useProjectStore.getState();
-    const story = store.createStory({
+    const story = store.createStory({ releaseId: "release-demo",
       title: "验收往返 Story",
       source: "manual",
       maturityStatus: "ready",
@@ -640,7 +664,7 @@ describe("course-stage project data chain", () => {
 
   it("derives returned acceptance grouping and keeps pending work below full completion", () => {
     const store = useProjectStore.getState();
-    const story = store.createStory({
+    const story = store.createStory({ releaseId: "release-demo",
       title: "完成度 Story",
       source: "manual",
       maturityStatus: "ready",
@@ -698,7 +722,7 @@ describe("course-stage project data chain", () => {
     expect(employee.startSprint("s3").ok).toBe(false);
     expect(employee.updateSprint("s3", { goal: "Unauthorized" }).ok).toBe(false);
     expect(employee.addStoriesToSprint("s3", ["cand-003"]).ok).toBe(false);
-    expect(() => employee.createSprint({
+    expect(() => employee.createSprint({ releaseId: "release-demo",
       name: "Unauthorized Sprint",
       goal: "Should fail",
       startDate: "2026-10-03",

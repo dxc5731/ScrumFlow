@@ -6,7 +6,7 @@ import { buildExecutionSummary } from "../agents/meetingExecutionSummary"
 
 function prepareStory() {
   const store = useProjectStore.getState()
-  const story = store.createStory({ title: "会议规划测试 Story", source: "manual", storyPoints: 4 })
+  const story = store.createStory({ releaseId: "release-demo", title: "会议规划测试 Story", source: "manual", storyPoints: 4 })
   store.addAcceptanceCriterion(story.id, "实现用户列表页面")
   store.addAcceptanceCriterion(story.id, "验证用户列表查询")
   const meeting = runPlanningMeeting(useProjectStore.getState(), "story", story.id)
@@ -142,7 +142,7 @@ describe("planning meeting proposal lifecycle", () => {
 
   it("resolves a proposed dependency between new Tasks and applies a Risk in the same meeting", () => {
     const store = useProjectStore.getState()
-    const story = store.createStory({ title: "高风险依赖 Story", source: "manual", risk: "high" })
+    const story = store.createStory({ releaseId: "release-demo", title: "高风险依赖 Story", source: "manual", risk: "high" })
     store.addAcceptanceCriterion(story.id, "完成接口设计")
     store.addAcceptanceCriterion(story.id, "接口设计完成后验证调用")
     const { proposal } = runPlanningMeeting(useProjectStore.getState(), "story", story.id)
@@ -166,8 +166,8 @@ describe("planning meeting proposal lifecycle", () => {
     vi.useFakeTimers({ toFake: ["Date"] })
     vi.setSystemTime(new Date("2026-10-01T10:00:00+08:00"))
     const store = useProjectStore.getState()
-    const sprint = store.createSprint({ name: "短 Sprint", goal: "交付两项任务", startDate: "2026-10-01", endDate: "2026-10-02", capacity: 8 })
-    const story = store.createStory({ title: "成员负载 Story", source: "manual", sprintId: sprint.id, startDate: sprint.startDate, dueDate: sprint.endDate })
+    const sprint = store.createSprint({ releaseId: "release-demo", name: "短 Sprint", goal: "交付两项任务", startDate: "2026-10-01", endDate: "2026-10-02", capacity: 8 })
+    const story = store.createStory({ releaseId: "release-demo", title: "成员负载 Story", source: "manual", sprintId: sprint.id, startDate: sprint.startDate, dueDate: sprint.endDate })
     store.createTask(story.id, { title: "任务 A", assigneeId: "m1", estimate: 10 })
     store.createTask(story.id, { title: "任务 B", assigneeId: "m1", estimate: 10 })
     const { proposal } = runPlanningMeeting(useProjectStore.getState(), "sprint", sprint.id)
@@ -182,8 +182,8 @@ describe("planning meeting proposal lifecycle", () => {
 
   it("raises an existing Risk when the Story deadline exceeds its Sprint", () => {
     const store = useProjectStore.getState()
-    const sprint = store.createSprint({ name: "风险 Sprint", goal: "交付", startDate: "2026-10-01", endDate: "2026-10-02", capacity: 8 })
-    const story = store.createStory({ title: "延期 Story", source: "manual", sprintId: sprint.id, startDate: sprint.startDate, dueDate: "2026-10-05" })
+    const sprint = store.createSprint({ releaseId: "release-demo", name: "风险 Sprint", goal: "交付", startDate: "2026-10-01", endDate: "2026-10-02", capacity: 8 })
+    const story = store.createStory({ releaseId: "release-demo", title: "延期 Story", source: "manual", sprintId: sprint.id, startDate: sprint.startDate, dueDate: "2026-10-05" })
     const risk = store.createRisk({ title: "原有风险", targetType: "story", targetId: story.id, level: "medium", description: "待观察", impact: "", mitigation: "", ownerId: "m1", status: "open" })
     const { proposal } = runPlanningMeeting(useProjectStore.getState(), "story", story.id)
     const update = proposal.actions.find((item) => item.actionType === "UPDATE_RISK")

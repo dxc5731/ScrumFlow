@@ -59,6 +59,21 @@ describe("meeting voice transcription", () => {
     expect(screen.getByRole("button", { name: /语音发言/ })).toBeTruthy()
   })
 
+  it("releases recording when quick chat is minimized and ignores delayed speech after reopening", () => {
+    const store = useProjectStore.getState()
+    const session = store.createMeeting("project", store.project.id)
+    const view = render(<MeetingRoom initialSessionId={session.id} presentation="compact" onClose={() => {}} />)
+    fireEvent.click(screen.getByRole("button", { name: /语音发言/ }))
+    const recognition = FakeRecognition.instance!, delayedResult = recognition.onresult!
+    const before = useProjectStore.getState().meetingSessions[session.id].messageIds.length
+    view.rerender(<MeetingRoom initialSessionId={session.id} presentation="compact" hidden onClose={() => {}} />)
+    expect(recognition.abort).toHaveBeenCalled()
+    view.rerender(<MeetingRoom initialSessionId={session.id} presentation="compact" onClose={() => {}} />)
+    act(() => delayedResult({ resultIndex: 0, results: [Object.assign([{ transcript: "收起前的迟到发言" }], { isFinal: true })] }))
+    expect(useProjectStore.getState().meetingSessions[session.id].messageIds).toHaveLength(before)
+    expect(screen.getByRole("button", { name: /语音发言/ })).toBeTruthy()
+  })
+
   it("restarts recognition when the browser ends it while still listening", () => {
     const store = useProjectStore.getState()
     const session = store.createMeeting("project", store.project.id)

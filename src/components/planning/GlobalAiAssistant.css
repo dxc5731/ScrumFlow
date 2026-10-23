@@ -1,0 +1,42 @@
+.ai-launcher-orb { position: fixed; z-index: 104; right: 22px; bottom: 22px; display: flex; align-items: center; justify-content: center; gap: 3px; width: 60px; height: 60px; border-radius: 50%; border: 1px solid #a79bea; color: #fff; background: linear-gradient(145deg, #7d5ce4, #5745bd); box-shadow: 0 8px 28px #6753c549, inset 0 1px 0 #ffffff55; cursor: pointer; transition: transform .15s, box-shadow .15s; }
+.ai-launcher-orb:hover { transform: translateY(-2px); box-shadow: 0 12px 32px #6753c560; }
+.ai-launcher-orb:focus-visible { outline: 3px solid #c5b8f3; outline-offset: 4px; }
+.ai-launcher-orb > span { font-size: 10px; font-weight: 700; }
+.ai-launcher-orb > b { position: absolute; top: -3px; right: -3px; min-width: 20px; height: 20px; padding: 2px 5px; border-radius: 12px; border: 2px solid #fff; background: #e45870; color: #fff; font-size: 9px; }
+.ai-launcher-backdrop { position: fixed; inset: 0; z-index: 102; background: transparent; cursor: default; }
+.ai-launcher-menu { position: fixed; z-index: 104; right: 22px; bottom: 94px; width: min(355px, calc(100vw - 28px)); max-height: calc(100dvh - 120px); overflow-y: auto; overscroll-behavior: contain; border: 1px solid #e5dff3; border-radius: 18px; background: #fff; box-shadow: 0 16px 60px #2f21532b; color: #344054; }
+.ai-launcher-menu > header { display: flex; padding: 20px 20px 16px; background: linear-gradient(135deg,#f7f3ff,#f6f9ff); }
+.ai-launcher-eyebrow { font-size: 9px; font-weight: 700; letter-spacing: .13em; color: #8c75c8; }
+.ai-launcher-menu h2 { margin: 7px 0 5px; font-size: 17px; font-weight: 650; color: #30254d; }
+.ai-launcher-menu header p { margin: 0; color: #837a96; font-size: 11px; }
+.ai-launcher-close { margin-left: auto; align-self: flex-start; padding: 3px; border-radius: 5px; color: #8d829e; }
+.ai-launcher-primary { display: flex; margin: 14px; overflow: hidden; border: 1px solid #d4c7f3; border-radius: 11px; background: #f7f3ff; }
+.ai-launcher-primary > button { display: flex; align-items: center; gap: 10px; color: #7051ba; padding: 13px; text-align: left; }
+.ai-launcher-primary > button:first-child { flex: 1; }
+.ai-launcher-primary > button:last-child { border-left: 1px solid #e4d9f7; }
+.ai-launcher-menu strong { display: block; font-size: 12px; font-weight: 600; }
+.ai-launcher-menu small { display: block; margin-top: 3px; color: #8b819b; font-size: 10px; }
+.ai-launcher-primary button:hover { background: #eee6fc; }
+.ai-launcher-links { padding: 0 10px 8px; }
+.ai-launcher-links > button { display: flex; width: 100%; align-items: center; gap: 12px; padding: 11px 12px; border-radius: 9px; text-align: left; color: #727d93; }
+.ai-launcher-links > button:hover { background: #f6f5fb; }
+.ai-launcher-links strong { color: #4c4760; }
+.ai-launcher-links b { margin-left: auto; padding: 3px 7px; border-radius: 10px; font-size: 10px; color: #7953c2; background: #f1eafd; }
+.ai-launcher-session { display: flex; align-items: center; gap: 10px; padding: 10px 20px; border-top: 1px solid #f0edf6; font-size: 9px; color: #98a2b3; }
+.ai-launcher-session button { color: #7f56b9; font-size: 10px; }
+.ai-launcher-session button:disabled { opacity: .5; }
+.ai-launcher-menu > footer { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-top: 1px solid #f0edf6; background: #faf9fc; }
+.ai-model-state { display: flex; align-items: center; gap: 6px; margin-right: auto; font-size: 10px; color: #84758e; }
+.ai-model-state i { width: 6px; height: 6px; background: #b4a8c4; border-radius: 50%; }
+.ai-model-state--configured i { background: #32a881; }.ai-model-state--missing i,.ai-model-state--error i { background: #efa84e; }
+.ai-launcher-menu footer button { color: #91869f; }.ai-launcher-menu footer button:disabled { opacity: .5; }
+.ai-launcher-config { padding: 14px 20px; border-top: 1px solid #eee8f5; background: #fffcf5; }
+.ai-launcher-config p { font-size: 10px; color: #887455; line-height: 1.7; margin: 6px 0; }
+.ai-launcher-config code { word-break: break-all; }
+.ai-launcher-spinning { animation: ai-launcher-spin 1.2s linear infinite; }@keyframes ai-launcher-spin { to { transform: rotate(360deg); } }
+@media (max-width: 540px) { .ai-launcher-orb { right: 16px; bottom: 16px; width: 52px; height: 52px; }.ai-launcher-menu { right: 12px; bottom: 80px; max-height: calc(100dvh - 100px); } }
+@media (prefers-reduced-motion: reduce) { .ai-launcher-orb { transition: none; }.ai-launcher-spinning { animation: none; } }
+
+.ai-launcher-orb { touch-action: none; user-select: none; }
+.ai-launcher-orb.is-dragging { cursor: grabbing; transform: none; transition: none; }
+.ai-launcher-menu { max-height: calc(100dvh - 24px); }

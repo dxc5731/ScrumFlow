@@ -25,7 +25,10 @@ type PreviewContent =
 const MAX_SHEET_ROWS = 500
 const MAX_SHEET_COLUMNS = 80
 
-async function getStoredAssetBlob(asset: DesignAssetEntity) {
+export async function getStoredAssetBlob(asset: DesignAssetEntity) {
+  if (asset.storage === "inline" && asset.sourceText) {
+    return new Blob([asset.sourceText], { type: inferFileMimeType(asset.name, asset.mimeType) })
+  }
   if (asset.storage !== "local-file" && asset.storage !== "indexeddb") {
     throw new Error("当前资产没有可读取的本地文件")
   }

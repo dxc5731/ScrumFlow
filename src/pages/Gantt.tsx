@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { fitGanttRange } from "../utils/ganttRange";
+import { matchesRelease, planningStories, planningScopeLabel } from "../store/release";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { addDays, differenceInCalendarDays, eachDayOfInterval, format, isWeekend, parseISO } from "date-fns";
 import { CalendarDays, ChevronDown, ChevronRight, CircleAlert, GitBranch, Link2, Plus, Trash2, Users } from "lucide-react";
 import { MemberAvatar, notify } from "../components/planning/ui";
@@ -39,7 +41,7 @@ type Row =
   | { kind: "subtask"; id: string; epicId: string; story: StoryEntity; task: TaskEntity; subtask: SubtaskEntity; label: string; depth: 3; height: number };
 type DragMode = ScheduleChangeMode | "progress";
 type SchedulePreview = ScheduleRange & { progress?: number };
-interface DragState { entityType: ScheduleEntityType; entityId: string; mode: DragMode; startX: number; startDate: string; endDate: string; progress: number; }
+interface DragState { entityType: ScheduleEntityType; entityId: string; mode: DragMode; startX: number; startDate: string; endDate: string; progress: number; panPixels: number; }
 
 export default function Gantt({
   captureOnly = false,
@@ -60,7 +62,7 @@ export default function Gantt({
   const scopedSubtasks = captureSprint ? Object.values(state.subtasks).filter(subtask => scopedTasks.some(task => task.id === subtask.taskId)) : [];
   const captureRanges = [...scopedStories.map(story => ({ startDate: story.startDate, endDate: story.dueDate })), ...scopedTasks, ...scopedSubtasks];
   const workspace = captureOnly ? { ...state.workspace,
-    ...(captureSprint ? { selectedSprintId: captureSprint.id, ganttRangeStart: [captureSprint.startDate, ...captureRanges.map(item => item.startDate)].sort()[0],
+    ...(captureSprint ? { releaseFilterId: "", selectedSprintId: captureSprint.id, ganttRangeStart: [captureSprint.startDate, ...captureRanges.map(item => item.startDate)].sort()[0],
       ganttRangeEnd: [captureSprint.endDate, ...captureRanges.map(item => item.endDate)].sort().at(-1)! } : {}),
     ...(captureFullScope ? { memberFilterId: null, ganttCollapsedIds: [], ganttHeatmapHighlight: null } : {}),
   } : state.workspace;
@@ -77,16 +79,16 @@ export default function Gantt({
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const dragRef = useRef<DragState | null>(null);
   const dragErrorRef = useRef<string | null>(null);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  const dragFinishedRef = useRef(false);
+  const [isDragging, setIsDragging] = useState(false);
+  useEffect(() => () => dragCleanupRef.current?.(), []);
   const [preview, setPreview] = useState<Record<string, SchedulePreview>>({});
   const previewRef = useRef(preview);
   previewRef.current = preview;
   const [dependencySource, setDependencySource] = useState<string | null>(null);
   const [selectedDependency, setSelectedDependency] = useState<string | null>(null);
   const [legendOpen, setLegendOpen] = useState(false);
-  const start = parseISO(workspace.ganttRangeStart);
-  const end = parseISO(workspace.ganttRangeEnd);
-  const days = useMemo(() => eachDayOfInterval({ start, end }), [workspace.ganttRangeStart, workspace.ganttRangeEnd]);
-  const timelineW = days.length * CELL;
   const heatmapHighlight = workspace.ganttHeatmapHighlight;
   const highlightedTaskIds = useMemo(() => new Set(heatmapHighlight?.taskIds ?? []), [heatmapHighlight]);
   const highlightedSubtaskIds = useMemo(() => new Set(heatmapHighlight?.subtaskIds ?? []), [heatmapHighlight]);
@@ -97,15 +99,15 @@ export default function Gantt({
         .map((taskId) => state.tasks[taskId]?.storyId)
         .filter(Boolean),
     );
-    const visible = selectSprintStories(state, workspace.selectedSprintId)
+    const visible = planningStories({ ...state, workspace })
       .filter((story) => !workspace.memberFilterId || story.assigneeId === workspace.memberFilterId);
     const included = new Set(visible.map((story) => story.id));
     Object.values(state.stories)
-      .filter((story) => highlightedStoryIds.has(story.id) && !included.has(story.id))
+      .filter((story) => highlightedStoryIds.has(story.id) && !included.has(story.id) && matchesRelease(story, workspace.releaseFilterId))
       .sort((a, b) => a.order - b.order)
       .forEach((story) => visible.push(story));
     return visible;
-  }, [state.stories, state.tasks, workspace.selectedSprintId, workspace.memberFilterId, heatmapHighlight]);
+  }, [state.stories, state.tasks, workspace.selectedSprintId, workspace.memberFilterId, workspace.releaseFilterId, heatmapHighlight]);
   const rows = useMemo(() => {
     const result: Row[] = [];
     const epicIds = [...new Set(stories.map((story) => story.epicId).filter(Boolean))] as string[];
@@ -130,6 +132,20 @@ export default function Gantt({
     return result;
   }, [stories, state.epics, state.tasks, state.subtasks, workspace.ganttCollapsedIds, highlightedTaskIds, highlightedSubtaskIds]);
 
+  // Fit the live preview in both directions. Pointer deltas are anchored independently of this moving origin.
+  const fittedRange = fitGanttRange(rows.filter(row => row.kind !== "epic").map(row => preview[row.id] ?? (row.kind === "story" ? { startDate: row.story.startDate, endDate: row.story.dueDate } : row.kind === "task" ? row.task : row.subtask)), { startDate: workspace.ganttRangeStart, endDate: workspace.ganttRangeEnd });
+  const start = parseISO(fittedRange.startDate);
+  const end = parseISO(fittedRange.endDate);
+  const days = useMemo(() => eachDayOfInterval({ start, end }), [fittedRange.startDate, fittedRange.endDate]);
+  const timelineW = days.length * CELL;
+  // Keep the first visible coordinate at earliest minus three, in either direction.
+  // Drag dates use the original pointer anchor, so fitting cannot feed back into the next move.
+  useLayoutEffect(() => {
+    if (dragRef.current && containerRef.current) containerRef.current.scrollLeft = 0;
+  }, [fittedRange.startDate]);
+  const rangeScope = [workspace.selectedSprintId, workspace.releaseFilterId, workspace.memberFilterId].join(":");
+  const rangeScopeRef = useRef("");
+
   const layout = useMemo(() => {
     let top = 0;
     return rows.map((row) => { const item = { row, top }; top += row.height; return item; });
@@ -151,6 +167,18 @@ export default function Gantt({
     el.scrollLeft = workspace.ganttScrollLeft;
     el.scrollTop = workspace.ganttScrollTop;
   }, [captureOnly]);
+
+  useEffect(() => {
+    if (captureOnly || isDragging) return;
+    const scopeChanged = rangeScopeRef.current !== rangeScope;
+    rangeScopeRef.current = rangeScope;
+    if (scopeChanged || fittedRange.startDate !== workspace.ganttRangeStart || fittedRange.endDate !== workspace.ganttRangeEnd) {
+      const left = dragFinishedRef.current ? containerRef.current?.scrollLeft ?? 0 : 0;
+      if (containerRef.current) containerRef.current.scrollLeft = left;
+      state.setWorkspace({ ganttRangeStart: fittedRange.startDate, ganttRangeEnd: fittedRange.endDate, ganttScrollLeft: left });
+    }
+    dragFinishedRef.current = false;
+  }, [captureOnly, isDragging, rangeScope, fittedRange.startDate, fittedRange.endDate]);
 
   useEffect(() => {
     if (captureOnly) return;
@@ -185,29 +213,36 @@ export default function Gantt({
   const beginDrag = (event: React.MouseEvent, entityType: ScheduleEntityType, entityId: string, range: ScheduleRange & { progress?: number }, mode: DragMode) => {
     event.preventDefault();
     event.stopPropagation();
+    dragCleanupRef.current?.();
     const current = preview[entityId] ?? range;
     const previousCursor = document.body.style.cursor;
     const previousUserSelect = document.body.style.userSelect;
     document.body.style.cursor = mode === "move" ? "grabbing" : mode === "left" ? "w-resize" : mode === "right" ? "e-resize" : "col-resize";
     document.body.style.userSelect = "none";
     dragErrorRef.current = null;
-    dragRef.current = { entityType, entityId, mode, startX: event.clientX, startDate: current.startDate, endDate: current.endDate, progress: current.progress ?? 0 };
-    const onMove = (moveEvent: MouseEvent) => {
+    dragRef.current = { entityType, entityId, mode, startX: event.clientX, startDate: current.startDate, endDate: current.endDate, progress: current.progress ?? 0, panPixels: 0 };
+    setIsDragging(true);
+    let pointerX = event.clientX;
+    let panFrame = 0;
+    let lastPreviewKey = "";
+    const updatePreview = () => {
       const drag = dragRef.current;
       if (!drag) return;
-      moveEvent.preventDefault();
-      const dayDelta = Math.round((moveEvent.clientX - drag.startX) / CELL);
+      const dayDelta = Math.round((pointerX - drag.startX + drag.panPixels) / CELL);
       let next = { startDate: drag.startDate, endDate: drag.endDate, progress: drag.progress };
       if (drag.mode === "move") next = { ...next, startDate: format(addDays(parseISO(drag.startDate), dayDelta), "yyyy-MM-dd"), endDate: format(addDays(parseISO(drag.endDate), dayDelta), "yyyy-MM-dd") };
       if (drag.mode === "left") { const candidate = format(addDays(parseISO(drag.startDate), dayDelta), "yyyy-MM-dd"); if (candidate <= drag.endDate) next.startDate = candidate; }
       if (drag.mode === "right") { const candidate = format(addDays(parseISO(drag.endDate), dayDelta), "yyyy-MM-dd"); if (candidate >= drag.startDate) next.endDate = candidate; }
       if (drag.mode === "progress") {
-        next.progress = Math.min(100, Math.max(0, drag.progress + Math.round((moveEvent.clientX - drag.startX) / 1.2)));
+        next.progress = Math.min(100, Math.max(0, drag.progress + Math.round((pointerX - drag.startX) / 1.2)));
         const nextPreview = { [drag.entityId]: next };
         previewRef.current = nextPreview;
         setPreview(nextPreview);
         return;
       }
+      const key = next.startDate + ":" + next.endDate;
+      if (key === lastPreviewKey) return;
+      lastPreviewKey = key;
       const plan = planHierarchySchedule(useProjectStore.getState(), drag.entityType, drag.entityId, next.startDate, next.endDate, drag.mode);
       if (!plan.ok) {
         dragErrorRef.current = plan.message;
@@ -217,6 +252,37 @@ export default function Gantt({
       const nextPreview = { ...plan.after.epics, ...plan.after.stories, ...plan.after.tasks, ...plan.after.subtasks };
       previewRef.current = nextPreview;
       setPreview(nextPreview);
+    };
+    const onMove = (moveEvent: MouseEvent) => {
+      moveEvent.preventDefault();
+      pointerX = moveEvent.clientX;
+      updatePreview();
+    };
+    const pan = () => {
+      const el = containerRef.current, drag = dragRef.current;
+      if (!el || !drag) return;
+      const edge = el.getBoundingClientRect().left + LABEL_W + 36;
+      if (drag.mode !== "progress" && pointerX < edge) {
+        const step = Math.min(18, Math.max(3, (edge - pointerX) / 3));
+        if (el.scrollLeft > 0) {
+          const before = el.scrollLeft;
+          el.scrollLeft = Math.max(0, before - step);
+          drag.panPixels += el.scrollLeft - before;
+        } else {
+          // No scrollable dates remain: keep advancing the drag and let the live range create them.
+          drag.panPixels -= step;
+        }
+        updatePreview();
+      }
+      panFrame = window.requestAnimationFrame(pan);
+    };
+    const cleanupDrag = () => {
+      window.cancelAnimationFrame(panFrame);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      dragCleanupRef.current = null;
     };
     const onUp = () => {
       const drag = dragRef.current;
@@ -234,15 +300,16 @@ export default function Gantt({
           notify(result.message, result.ok ? "success" : "error", result.ok);
         }
       }
+      dragFinishedRef.current = true;
       dragRef.current = null;
+      setIsDragging(false);
       dragErrorRef.current = null;
       previewRef.current = {};
       setPreview({});
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousUserSelect;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      cleanupDrag();
     };
+    dragCleanupRef.current = cleanupDrag;
+    panFrame = window.requestAnimationFrame(pan);
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   };
@@ -257,13 +324,15 @@ export default function Gantt({
   return (
     <div
       ref={captureOnly ? captureRef : undefined}
+      data-gantt-start={fittedRange.startDate}
+      data-gantt-end={fittedRange.endDate}
       className={`relative flex min-w-0 flex-col bg-[#F8FAFC] ${captureOnly ? "planning-export-capture" : "h-full"}`}
       style={captureOnly ? { width: LABEL_W + timelineW } : undefined}
     >
       {captureOnly ? <div className="flex h-16 flex-shrink-0 items-center gap-3 border-b border-[#D0D5DD] bg-white px-5">
         <div className="min-w-0 flex-1">
           <div className="text-base font-semibold text-[#172033]">{state.project.name} · 甘特图</div>
-          <div className="mt-1 text-[10px] text-[#667085]">{sprint?.name ?? "未选择 Sprint"} · {workspace.ganttRangeStart} 至 {workspace.ganttRangeEnd} · 当前层级折叠状态</div>
+          <div className="mt-1 text-[10px] text-[#667085]">{planningScopeLabel({ ...state, workspace })} · {fittedRange.startDate} 至 {fittedRange.endDate} · 当前层级折叠状态</div>
         </div>
         <span className="rounded border border-[#B2CCFF] bg-[#EFF8FF] px-2 py-1 text-[10px] font-medium text-[#175CD3]">{rows.filter((row) => row.kind === "task").length} 个任务</span>
         <span className="rounded border border-[#D9D6FE] bg-[#F4F3FF] px-2 py-1 text-[10px] font-medium text-[#5925DC]">{workspace.ganttCriticalPath ? "显示关键路径" : "普通视图"}</span>
@@ -280,7 +349,7 @@ export default function Gantt({
         </div>
       </div>}
 
-      <div ref={captureOnly ? undefined : containerRef} className={captureOnly ? "overflow-visible" : "min-h-0 flex-1 overflow-auto"} onScroll={captureOnly ? undefined : (event) => state.setWorkspace({ ganttScrollLeft: event.currentTarget.scrollLeft, ganttScrollTop: event.currentTarget.scrollTop })}>
+      <div ref={captureOnly ? undefined : containerRef} className={captureOnly ? "overflow-visible" : "min-h-0 flex-1 overflow-auto"} onScroll={captureOnly ? undefined : (event) => { if (!dragRef.current) state.setWorkspace({ ganttScrollLeft: event.currentTarget.scrollLeft, ganttScrollTop: event.currentTarget.scrollTop }); }}>
         <div className="relative" style={{ minWidth: LABEL_W + timelineW, height: HEADER_H + rowsHeight + 40 }}>
           <div className="sticky top-0 z-30 flex h-[52px] border-b border-[#E2E7EE] bg-white">
             <div className="sticky left-0 z-40 flex w-[320px] flex-shrink-0 items-end border-r border-[#E2E7EE] bg-white px-4 pb-2 text-xs font-semibold text-[#344054]">工作项</div>
@@ -440,7 +509,7 @@ function GanttRow({ row, start, days, preview, critical, dependencySource, selec
       </button>
     </span>
   );
-  return <div ref={setRef} className="group flex border-b border-[#F2F4F7] transition-colors hover:bg-[#F8FAFF]" style={{ height: row.height, background: rowBg }}>
+  return <div ref={setRef} data-gantt-row={row.id} className="group flex border-b border-[#F2F4F7] transition-colors hover:bg-[#F8FAFF]" style={{ height: row.height, background: rowBg }}>
     <div className="sticky left-0 z-20 flex w-[320px] flex-shrink-0 items-center gap-2 border-r border-[#E2E7EE] px-3 transition-colors group-hover:bg-[#F8FAFF]" style={{ paddingLeft: 12 + row.depth * 16, background: rowBg }}>
       {canCollapse ? <button className="icon-button h-4 w-4" onClick={() => toggle(row.id)}>{collapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}</button> : <span className="h-4 w-4" />}
       {epicLabel && <span className="font-mono text-[9px] font-semibold text-[#172033]">{epicLabel.code}</span>}
@@ -494,7 +563,7 @@ function GanttRow({ row, start, days, preview, critical, dependencySource, selec
         <span className="absolute bottom-0 left-0 top-0 rounded-[2px] opacity-55" style={{ width: `${value.progress}%`, background: STATUS[task.status].accent }} />
         <span className="absolute bottom-[-3px] left-0 top-[-3px] z-10 w-1.5 cursor-w-resize rounded-l opacity-0 group-hover:opacity-100" title="调整开始日期" onMouseDown={(event) => beginDrag(event, "task", task.id, value, "left")} />
         <span className="absolute bottom-[-3px] right-0 top-[-3px] z-10 w-1.5 cursor-e-resize rounded-r opacity-0 group-hover:opacity-100" title="调整结束日期" onMouseDown={(event) => beginDrag(event, "task", task.id, value, "right")} />
-        <span className="absolute inset-y-0 left-2 right-2 cursor-move" onMouseDown={(event) => beginDrag(event, "task", task.id, value, "move")} />
+        <span data-gantt-bar="move" className="absolute inset-y-0 left-2 right-2 cursor-move" onMouseDown={(event) => beginDrag(event, "task", task.id, value, "move")} />
         {renderDependencyButton(task.id)}
         <span className="absolute top-1/2 h-2.5 w-1.5 -translate-x-1/2 -translate-y-1/2 cursor-col-resize rounded-sm border border-white bg-[#5925DC] opacity-0 shadow-sm group-hover:opacity-100" style={{ left: `${value.progress}%` }} title="拖动调整进度" onMouseDown={(event) => beginDrag(event, "task", task.id, value, "progress")} />
       </div>}

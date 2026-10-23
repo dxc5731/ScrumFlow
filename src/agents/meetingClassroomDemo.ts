@@ -6,6 +6,7 @@ import { dependencyImpact } from "./meetingDependency"
 import { captureMeetingOutcome, meetingInsights, meetingOutcomeState } from "./meetingOutcomes"
 import { generateMeetingMinutes } from "./meetingMinutes"
 import { buildMeetingContext } from "./meetingContext"
+import { createBaseDemoProjectState } from "../data/demoProject"
 
 export const classroomDemoId = "meeting-classroom-sprint-v1"
 export const classroomDemoTitle = "Sprint 项目风险与交付决策 · AI 智能会议演示"
@@ -22,8 +23,12 @@ export function projectFingerprint(state: ProjectDataState) {
 
 /** Recorded dialogue + real deterministic analyses and Store execution, all on a private clone. */
 export function buildClassroomDemo(source: ProjectDataState, now = new Date()) {
-  if (!source.stories.us024 || !source.tasks["data-024"] || !source.risks["risk-us024"] || !source.sprints.s2 || ["m1", "m2", "m3", "m4"].some(id => !source.members[id])) throw new Error("当前项目缺少演示所需的 US024、DATA-024 或成员；未改动原项目。")
-  const base = projectDataSnapshot(source)
+  // The comprehensive demo has its own task IDs. Keep the recorded classroom
+  // scenario on a labelled reference snapshot instead of injecting old tasks.
+  const referenceSnapshot = source.project.id === "scrumflow-comprehensive-demo"
+  const base = projectDataSnapshot(referenceSnapshot ? createBaseDemoProjectState() : source)
+  if (referenceSnapshot) base.project = { ...base.project, id: source.project.id, name: "ScrumFlow 课堂会议独立示例" }
+  if (!base.stories.us024 || !base.tasks["data-024"] || !base.risks["risk-us024"] || !base.sprints.s2 || ["m1", "m2", "m3", "m4"].some(id => !base.members[id])) throw new Error("当前项目缺少演示所需的 US024、DATA-024 或成员；未改动原项目。")
   base.meetingSessions = {}; base.meetingMessages = {}; base.proposals = {}; base.history = []; base.assets = {}
   base.workspace.currentUserId = "m1"
   const sandbox = createProjectStore(base), get = sandbox.getState
@@ -132,7 +137,7 @@ export function buildClassroomDemo(source: ProjectDataState, now = new Date()) {
   sandbox.setState({ proposals, history: get().history.map(h => ({ ...h, createdAt: at(20) })) })
   session = { ...final, status: "ended", endedAt: at(32), topics: session.topics, memory,
     facilitation: { ...session.facilitation!, actualDurationMs: 32 * 60_000, actualOvertimeMs: 2 * 60_000 },
-    demo: { version: 1, source: "project-snapshot", sourceCapturedAt: now.toISOString(), sourceFingerprint: projectFingerprint(source), recordedEvents: true, materialStatus: "pending", agendaTiming: [
+    demo: { version: 1, source: referenceSnapshot ? "reference-snapshot" : "project-snapshot", sourceCapturedAt: now.toISOString(), sourceFingerprint: projectFingerprint(referenceSnapshot ? base : source), recordedEvents: true, materialStatus: "pending", agendaTiming: [
       { topicId: "demo-status", plannedMinutes: 8, startedAt: at(0), endedAt: at(8) }, { topicId: "demo-options", plannedMinutes: 14, startedAt: at(8), endedAt: at(23) }, { topicId: "demo-decisions", plannedMinutes: 8, startedAt: at(23), endedAt: at(32) },
     ] } }
   session.outcomeSnapshot = captureMeetingOutcome(get(), session)
@@ -147,7 +152,7 @@ export function ensureClassroomDemo() {
   if (preparing) return preparing
   preparing = (async () => {
     let state = useProjectStore.getState()
-    if (state.project.id !== "scrumflow-ai") return
+    if (!["scrumflow-ai", "scrumflow-comprehensive-demo"].includes(state.project.id)) return
     if (!state.meetingSessions[classroomDemoId]) {
       const built = buildClassroomDemo(state)
       useProjectStore.setState(s => ({ meetingSessions: { ...s.meetingSessions, [classroomDemoId]: built.session }, meetingMessages: { ...s.meetingMessages, ...built.messages } }))
