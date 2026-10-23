@@ -21,6 +21,7 @@ import {
   selectActiveRisks,
   selectDailyActualWorkloadHeatmap,
   selectDailyWorkloadHeatmap,
+  selectMemberObjectiveFacts,
   selectProjectCompletion,
   selectReleaseSummary,
   selectRisks,
@@ -420,6 +421,7 @@ function ActualWorkloadCell({
 export function AnalyticsPage() {
   const state = useProjectStore()
   const workloads = selectTeamWorkloads(state)
+  const memberFacts = selectMemberObjectiveFacts(state)
   const heatmap = selectDailyWorkloadHeatmap(state)
   const actualHeatmap = selectDailyActualWorkloadHeatmap(state)
   const actualHeatmapScrollRef = useRef<HTMLDivElement>(null)
@@ -448,6 +450,52 @@ export function AnalyticsPage() {
         <p className="mb-2 text-[10px] text-[#667085]">{selectedSprint?.name} · 按叶子任务进度估算剩余工作；容量按今天起至 Sprint 结束的工作日计算，整轮规划容量单独列出。</p>
         <div className="overflow-hidden rounded-lg border border-[#E2E7EE] bg-white">
           {workloads.map((item) => <div key={item.memberId} className="grid grid-cols-[180px_1fr_90px_90px_110px] items-center gap-4 border-b border-[#F2F4F7] px-4 py-3 last:border-0"><button className="flex items-center gap-2 text-left hover:underline" onClick={() => state.setWorkspace({ currentPage: "story-map", memberFilterId: item.memberId })}><MemberAvatar memberId={item.memberId} size={26} /><span><span className="block text-xs font-medium text-[#344054]">{item.member.name}</span><span className="block text-[10px] text-[#98A2B3]">{item.member.role}</span></span></button><div><div className="h-2 overflow-hidden rounded bg-[#EAECF0]"><div className="h-full" style={{ width: `${Math.min(item.utilization, 100)}%`, background: item.utilization > 100 ? "#D92D20" : item.utilization > 85 ? "#DC6803" : "#039855" }} /></div><div className="mt-1 text-[10px] text-[#667085]">{item.plannedHours}h / 剩余时间容量 {item.capacityHours}h · 整轮 {item.planningCapacity}h · 余量 {item.remainingCapacity}h</div></div><span className="text-center text-xs">按时 {item.onTimeCount}/{item.completedCount}</span><span className="text-center text-xs text-[#B42318]">逾期 {item.overdueCount} · 停滞 {item.stalledCount}</span><span className="text-center text-xs text-[#B54708]">阻塞 {item.blockedCount} · 返工 {item.reworkCount}</span></div>)}
+        </div>
+      </Section>
+      <Section title="成员客观事实（教学视图）">
+        <p className="mb-2 text-[10px] text-[#667085]">{memberFacts[0]?.sprintName ?? selectedSprint?.name} · 仅陈列可核对的客观数字，不排名、不打分，如何评价由管理者判断。</p>
+        <div className="overflow-x-auto rounded-lg border border-[#E2E7EE] bg-white">
+          <table className="w-full min-w-[820px] border-collapse text-[11px]">
+            <thead>
+              <tr className="border-b border-[#E2E7EE] bg-[#F9FAFB] text-[10px] text-[#667085]">
+                <th className="px-3 py-2 text-left font-semibold">成员</th>
+                <th className="px-2 py-2 text-center font-semibold">任务</th>
+                <th className="px-2 py-2 text-center font-semibold">完成</th>
+                <th className="px-2 py-2 text-center font-semibold">按时</th>
+                <th className="px-2 py-2 text-center font-semibold">逾期</th>
+                <th className="px-2 py-2 text-center font-semibold">阻塞</th>
+                <th className="px-2 py-2 text-center font-semibold">停滞</th>
+                <th className="px-2 py-2 text-center font-semibold">返工</th>
+                <th className="px-2 py-2 text-center font-semibold">缺成果</th>
+                <th className="px-2 py-2 text-center font-semibold">负责 Story</th>
+                <th className="px-2 py-2 text-center font-semibold">未决风险</th>
+                <th className="px-2 py-2 text-center font-semibold">会议发言</th>
+              </tr>
+            </thead>
+            <tbody>
+              {memberFacts.map((fact) => (
+                <tr key={fact.memberId} className="border-b border-[#F2F4F7] last:border-0">
+                  <td className="whitespace-nowrap px-3 py-2 text-left">
+                    <button className="flex items-center gap-2 text-left hover:underline" onClick={() => state.setWorkspace({ currentPage: "story-map", memberFilterId: fact.memberId })}>
+                      <MemberAvatar memberId={fact.memberId} size={22} />
+                      <span><span className="block text-xs font-medium text-[#344054]">{fact.name}</span><span className="block text-[10px] text-[#98A2B3]">{fact.role}</span></span>
+                    </button>
+                  </td>
+                  <td className="px-2 py-2 text-center text-[#475467]">{fact.taskCount}</td>
+                  <td className="px-2 py-2 text-center text-[#067647]">{fact.completedCount}</td>
+                  <td className="px-2 py-2 text-center text-[#475467]">{fact.onTimeCount}</td>
+                  <td className={`px-2 py-2 text-center ${fact.overdueCount ? "text-[#B42318]" : "text-[#98A2B3]"}`}>{fact.overdueCount}</td>
+                  <td className={`px-2 py-2 text-center ${fact.blockedCount ? "text-[#B54708]" : "text-[#98A2B3]"}`}>{fact.blockedCount}</td>
+                  <td className={`px-2 py-2 text-center ${fact.stalledCount ? "text-[#B54708]" : "text-[#98A2B3]"}`}>{fact.stalledCount}</td>
+                  <td className={`px-2 py-2 text-center ${fact.reworkCount ? "text-[#B42318]" : "text-[#98A2B3]"}`}>{fact.reworkCount}</td>
+                  <td className={`px-2 py-2 text-center ${fact.missingArtifactCount ? "text-[#B54708]" : "text-[#98A2B3]"}`}>{fact.missingArtifactCount}</td>
+                  <td className="px-2 py-2 text-center text-[#475467]">{fact.storyCount}</td>
+                  <td className={`px-2 py-2 text-center ${fact.openRiskCount ? "text-[#B42318]" : "text-[#98A2B3]"}`}>{fact.openRiskCount}</td>
+                  <td className="px-2 py-2 text-center text-[#475467]">{fact.meetingSpeechCount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </Section>
       <Section title="异常任务定位">

@@ -1,10 +1,11 @@
 import { addDays, differenceInCalendarDays, format, parseISO } from "date-fns"
-import { buildWorkloadSnapshot, projectDate } from "../utils/workloadAnalysis"
+import { buildWorkloadSnapshot, projectDate, taskLeaves } from "../utils/workloadAnalysis"
 import type {
   AgentProposal,
   AssetLinkTargetType,
   BlockReasonEntity,
   ProjectDataState,
+  RiskEntity,
   StoryEntity,
   SubtaskEntity,
   TaskEntity,
@@ -666,6 +667,84 @@ export function selectTeamWorkloads(state: ProjectDataState, now = new Date(), s
   return Object.values(state.members)
     .map((member) => ({ member, ...selectMemberWorkload(state, member.id, now, sprintId) }))
     .sort((a, b) => b.utilization - a.utilization)
+}
+
+/** 成员客观事实：按成员聚合可核对的数字，供教学评估。只陈列事实，不打分、不排名。 */
+export interface MemberObjectiveFacts {
+  memberId: string
+  name: string
+  role: string
+  sprintName: string
+  taskCount: number
+  completedCount: number
+  onTimeCount: number
+  overdueCount: number
+  blockedCount: number
+  stalledCount: number
+  reworkCount: number
+  missingArtifactCount: number
+  storyCount: number
+  openRiskCount: number
+  meetingSpeechCount: number
+}
+
+export function selectMemberObjectiveFacts(
+  state: ProjectDataState,
+  now = new Date(),
+  sprintId = state.workspace.selectedSprintId,
+): MemberObjectiveFacts[] {
+  const sprintName = state.sprints[sprintId]?.name ?? "未选择 Sprint"
+  const inSprint = (id: string | null | undefined) => !!id && id === sprintId
+  const leavesInSprint = Object.values(state.tasks)
+    .filter((task) => inSprint(state.stories[task.storyId]?.sprintId))
+    .flatMap((task) => taskLeaves(state, task))
+  const speechByMember: Record<string, number> = {}
+  Object.values(state.meetingMessages).forEach((message) => {
+    if (message.senderType === "user") {
+      speechByMember[message.senderId] = (speechByMember[message.senderId] ?? 0) + 1
+    }
+  })
+  const riskInSprint = (risk: RiskEntity) => {
+    if (risk.targetType === "sprint") return risk.targetId === sprintId
+    if (risk.targetType === "story") return inSprint(state.stories[risk.targetId]?.sprintId)
+    const task = state.tasks[risk.targetId]
+    return !!task && inSprint(state.stories[task.storyId]?.sprintId)
+  }
+  return Object.values(state.members)
+    .map((member): MemberObjectiveFacts => {
+      const workload = selectMemberWorkload(state, member.id, now, sprintId)
+      const mine = leavesInSprint.filter((leaf) => leaf.assigneeId === member.id)
+      const missingArtifactCount = mine.filter(
+        (leaf) =>
+          (leaf.status === "review" || leaf.status === "done") &&
+          !leaf.resultSummary?.trim() &&
+          !leaf.submittedAt,
+      ).length
+      const storyCount = Object.values(state.stories).filter(
+        (story) => story.assigneeId === member.id && inSprint(story.sprintId),
+      ).length
+      const openRiskCount = Object.values(state.risks).filter(
+        (risk) => risk.ownerId === member.id && risk.status !== "resolved" && riskInSprint(risk),
+      ).length
+      return {
+        memberId: member.id,
+        name: member.name,
+        role: member.role,
+        sprintName,
+        taskCount: workload.taskCount,
+        completedCount: workload.completedCount,
+        onTimeCount: workload.onTimeCount,
+        overdueCount: workload.overdueCount,
+        blockedCount: workload.blockedCount,
+        stalledCount: workload.stalledCount,
+        reworkCount: workload.reworkCount,
+        missingArtifactCount,
+        storyCount,
+        openRiskCount,
+        meetingSpeechCount: speechByMember[member.id] ?? 0,
+      }
+    })
+    .sort((a, b) => a.memberId.localeCompare(b.memberId))
 }
 
 export function selectDailyWorkloadHeatmap(
