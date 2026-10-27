@@ -10,7 +10,7 @@ export interface UsageEntry {
   requestId?: string; meetingId?: string; mode: string; model: string; at: string
   usage: ProviderUsage; estimatedCny: number; attempt: number
 }
-const ledger = path.resolve("local-data", "meeting-usage.jsonl")
+const ledger = path.resolve(process.env.PROJECT_DATA_DIRECTORY || "local-data", "meeting-usage.jsonl")
 // Official prices checked 2026-10-07. Peak USD rates and 7.2 CNY/USD form a
 // conservative budget estimate; actual holiday/off-peak billing can be lower.
 export function estimateMeetingCost(model: string, usage: ProviderUsage): number {

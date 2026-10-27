@@ -5,6 +5,7 @@ import { getBlob } from "../../store/blobStore"
 import type { DesignAssetEntity } from "../../types"
 import {
   getAssetPreviewType,
+  getFileExtension,
   inferFileMimeType,
   type AssetPreviewType,
 } from "../../utils/assetFiles"
@@ -80,7 +81,10 @@ async function parsePreview(asset: DesignAssetEntity, previewType: AssetPreviewT
   }
   if (previewType === "spreadsheet") {
     const XLSX = await import("xlsx")
-    const workbook = XLSX.read(await blob.arrayBuffer(), { type: "array", cellDates: true })
+    const isCsv = getFileExtension(asset.name) === "csv" || blob.type.toLowerCase().startsWith("text/csv")
+    const workbook = XLSX.read(await blob.arrayBuffer(), {
+      type: "array", cellDates: true, ...(isCsv ? { codepage: 65001 } : {}),
+    })
     const sheets = workbook.SheetNames.map((sheetName) => {
       const worksheet = workbook.Sheets[sheetName]
       const sourceRows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {

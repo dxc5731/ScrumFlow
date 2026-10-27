@@ -19,6 +19,9 @@ export default defineConfig(() => {
     },
     test: {
       exclude: ['**/node_modules/**', '**/dist/**', '**/output/**'],
+      env: {
+        PROJECT_DATA_DIRECTORY: process.env.PROJECT_DATA_DIRECTORY || path.resolve(import.meta.dirname, 'output/vitest-data'),
+      },
     },
     plugins: [
       localProjectPersistence(),

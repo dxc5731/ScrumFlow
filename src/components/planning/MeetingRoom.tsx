@@ -1,3 +1,4 @@
+import { projectDate } from "../../utils/workloadAnalysis"
 import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent } from "react"
 import DOMPurify from "dompurify"
 import { marked } from "marked"
@@ -188,7 +189,7 @@ function ContextPanel({ state, sessionId, onToggle }: { state: ProjectDataState;
   const unverified = (session.facts ?? []).filter((fact) => fact.type === "hypothesis" && fact.status === "unverified")
   const topics = session.topics ?? []
   const warnings = [
-    sprint && sprint.endDate < new Date().toISOString().slice(0, 10) ? "Sprint 计划结束日已过" : "",
+    sprint && sprint.endDate < projectDate() ? "Sprint 计划结束日已过" : "",
     story && criteria.length === 0 ? "尚未填写验收标准" : "",
     risks.length ? `${risks.length} 项未关闭风险` : "",
     proposals.some((proposal) => proposal.actions.some((action) => action.status === "pending" && action.decision === "pending")) ? "当前工作有待审核的项目建议" : "",

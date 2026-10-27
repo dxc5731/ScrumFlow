@@ -26,14 +26,22 @@ async function requestState(method: "GET" | "PUT" | "DELETE", value?: string) {
   })
 }
 
-function recoveryValue() {
-  try { return typeof window === "undefined" ? null : window.localStorage.getItem(RECOVERY_KEY) }
+function browserValue(name: string) {
+  try { return typeof window === "undefined" ? null : window.localStorage.getItem(name) }
   catch { return null }
+}
+
+function validateSnapshot(value: string) {
+  const parsed = JSON.parse(value)
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+      !parsed.state || typeof parsed.state !== "object" || Array.isArray(parsed.state)) {
+    throw new Error("本地项目数据格式无效")
+  }
 }
 
 async function savePending() {
   const value = pendingValue
-  if (value === null) return
+  if (value === null || restoreBlocked) return
   publish("saving")
   try {
     const response = await requestState("PUT", value)
@@ -63,26 +71,38 @@ if (typeof window !== "undefined") window.addEventListener("online", () => { voi
 
 export const localProjectStorage: StateStorage = {
   async getItem(name) {
-    const recovery = recoveryValue()
+    const recovery = browserValue(RECOVERY_KEY)
     try {
+      if (recovery !== null) validateSnapshot(recovery)
       const response = await requestState("GET")
       if (!response.ok && response.status !== 404) throw new Error(`本地项目数据读取失败（${response.status}）`)
       const saved = response.ok ? await response.text() : null
-      restoreBlocked = false
-      const legacy = typeof window === "undefined" ? null : window.localStorage.getItem(name)
+      const legacy = response.status === 404 ? browserValue(name) : null
       const restored = recovery ?? (response.status === 404 ? legacy : null)
-      if (restored) {
-        JSON.parse(restored)
+      const value = restored ?? saved
+      if (value !== null) validateSnapshot(value)
+      restoreBlocked = false
+      if (restored !== null) {
         pendingValue = restored
         void retryLocalSave()
         return restored
       }
-      if (saved && typeof window !== "undefined") window.localStorage.removeItem(name)
+      try { if (saved && typeof window !== "undefined") window.localStorage.removeItem(name) } catch { /* 本地文件已恢复，浏览器存储不可用不影响读取。 */ }
+      publish("saved")
       return saved
     } catch (error) {
       publish("error", error instanceof Error ? error.message : "本地数据恢复失败")
-      if (recovery) { JSON.parse(recovery); pendingValue = recovery; void retryLocalSave(); return recovery }
+      if (recovery !== null) {
+        try {
+          validateSnapshot(recovery)
+          restoreBlocked = false
+          pendingValue = recovery
+          void retryLocalSave()
+          return recovery
+        } catch { /* 保留损坏的恢复副本，并阻止默认数据覆盖原文件。 */ }
+      }
       restoreBlocked = true
+      clearTimeout(retryTimer)
       publish("error", "本地数据读取失败，已停止保存以保护原项目；请重试恢复。")
       throw error
     }

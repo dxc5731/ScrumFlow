@@ -1,4 +1,5 @@
 import { X } from "lucide-react"
+import { createPortal } from "react-dom"
 
 export default function Modal({
   open,
@@ -18,7 +19,7 @@ export default function Modal({
   width?: number
 }) {
   if (!open) return null
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[110] flex items-center justify-center bg-[#101828]/25 p-4"
       onMouseDown={onClose}
@@ -48,6 +49,7 @@ export default function Modal({
           </footer>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

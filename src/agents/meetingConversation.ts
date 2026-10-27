@@ -1,3 +1,4 @@
+import { projectDate } from "../utils/workloadAnalysis"
 import { addDays, differenceInBusinessDays, parseISO } from "date-fns"
 import { buildParallelTaskProposal, runPlanningMeeting } from "./meeting"
 import { analyzeMeetingRequest } from "./meetingRequest"
@@ -255,7 +256,7 @@ function workloadAnswer(state: ProjectDataState, session: MeetingSession, questi
 function monitorAnswer(state: ProjectDataState, session: MeetingSession): AgentAnswer {
   const stories = targetStories(state, session)
   const tasks = stories.flatMap((story) => story.taskIds.map((id) => state.tasks[id]).filter(Boolean))
-  const today = new Date().toISOString().slice(0, 10)
+  const today = projectDate()
   const overdue = tasks.filter((task) => task.status !== "done" && task.endDate < today)
   const blocked = tasks.filter((task) => task.status === "blocked")
   const lowProgress = tasks.filter((task) => task.status !== "done" && task.progress < 30 && task.endDate <= today)

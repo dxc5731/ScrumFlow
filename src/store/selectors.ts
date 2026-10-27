@@ -1,5 +1,5 @@
 import { addDays, differenceInCalendarDays, format, parseISO } from "date-fns"
-import { buildWorkloadSnapshot, projectDate } from "../utils/workloadAnalysis"
+import { buildWorkloadSnapshot, projectDate, roundHours } from "../utils/workloadAnalysis"
 import type {
   AgentProposal,
   AssetLinkTargetType,
@@ -593,7 +593,7 @@ export function selectScheduleHealth(
 
 export function selectTaskVisualState(
   task: Pick<TaskEntity, "status" | "progress" | "endDate" | "blockedSeverity">,
-  today = new Date().toISOString().slice(0, 10),
+  today = projectDate(),
 ) {
   if (task.status === "blocked" && task.blockedSeverity === "severe") {
     return "severe-blocked" as const
@@ -670,7 +670,7 @@ export function selectTeamWorkloads(state: ProjectDataState, now = new Date(), s
 
 export function selectDailyWorkloadHeatmap(
   state: ProjectDataState,
-  anchorDate = new Date().toISOString().slice(0, 10),
+  anchorDate = projectDate(),
   daysBefore = 14,
   daysAfter = 14,
 ) {
@@ -754,7 +754,7 @@ function stableWorkloadWeight(seed: string) {
 
 export function selectDailyActualWorkloadHeatmap(
   state: ProjectDataState,
-  anchorDate = new Date().toISOString().slice(0, 10),
+  anchorDate = projectDate(),
   daysBefore = 41,
 ) {
   const anchor = parseISO(anchorDate)
@@ -873,8 +873,8 @@ export function selectSprintAnalytics(state: ProjectDataState, sprintId: string)
   const stories = selectSprintStories(state, sprintId)
   const tasks = selectSprintTasks(state, sprintId)
   const completed = tasks.filter((task) => task.status === "done")
-  const totalEstimate = tasks.reduce((sum, task) => sum + task.estimate, 0)
-  const completedEstimate = completed.reduce((sum, task) => sum + task.estimate, 0)
+  const totalEstimate = roundHours(tasks.reduce((sum, task) => sum + task.estimate, 0))
+  const completedEstimate = roundHours(completed.reduce((sum, task) => sum + task.estimate, 0))
   const activeRisks = selectActiveRisks(state).filter(
     (risk) =>
       (risk.targetType === "sprint" && risk.targetId === sprintId) ||
